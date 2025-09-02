@@ -45,7 +45,18 @@ from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.utils import (direct_register_custom_op, get_distributed_init_method,
                         resolve_obj_by_qualname, supports_custom_op)
+from torch.distributed.distributed_c10d import (
+    PrefixStore,
+    Store,
+    _new_process_group_helper,
+    _world,
+    default_pg_timeout,
+    rendezvous,
+    _get_default_group,
+    _update_default_pg,
+)
 
+from datetime import timedelta
 
 @dataclass
 class GraphCaptureContext:
@@ -870,6 +881,158 @@ def init_world_group(ranks: list[int], local_rank: int,
         group_name="world",
     )
 
+# def model_parallel_initialized():
+#     return (_ETP is not None and _EP is not None)
+
+
+def init_afd_process_group(
+    backend: Union[str, Backend] = None,
+    init_method: Optional[str] = None,
+    timeout: Optional[timedelta] = None,
+    world_size: int = -1,
+    rank: int = -1,
+    store: Optional[Store] = None,
+    group_name: str = None,
+    pg_options: Optional[Any] = None,
+):
+    assert (store is None) or (init_method is None), (
+        "Cannot specify both init_method and store."
+    )
+
+    if store is not None:
+        assert world_size > 0, "world_size must be positive if using store"
+        assert rank >= 0, "rank must be non-negative if using store"
+    elif init_method is None:
+        init_method = "env://"
+
+    if backend:
+        backend = Backend(backend)
+    else:
+        backend = Backend("undefined")
+
+    if timeout is None:
+        timeout = default_pg_timeout
+
+    if store is None:
+        rendezvous_iterator = rendezvous(
+            init_method, rank, world_size, timeout=timeout
+        )
+        store, rank, world_size = next(rendezvous_iterator)
+        store.set_timeout(timeout)
+        store = PrefixStore(group_name, store)
+
+    pg_options_param_name = (
+        "backend_options" if str(torch.__version__) >= "2.6" else "pg_options"
+    )
+    pg, _ = _new_process_group_helper(
+        world_size,
+        rank,
+        [],
+        backend,
+        store,
+        group_name=group_name,
+        **{pg_options_param_name: pg_options},
+        timeout=timeout,
+    )
+    global _AFD
+    _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}
+    _AFD = pg
+    return pg
+
+
+class DefaultProcessGroupSwitcher:
+    def __init__(self, default_group, new_default_group):
+        self.default_group = default_group
+        self.new_default_group = new_default_group
+
+    def __enter__(self):
+        _update_default_pg(self.new_default_group)
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        _update_default_pg(self.default_group)
+
+# def init_ascend_model_parallel_for_AE_split(
+#     expert_parallel_size: int = 1,
+#     expert_tensor_parallel_size: int = 1,
+#     world_size: Optional[int] = None,
+#     backend: Optional[str] = None,
+# ):
+#     # print("in init_ascend_model_parallel")
+#     # print(f"tensor_parallel_size is == {expert_parallel_size}")
+#     all_ranks = torch.arange(world_size).reshape(
+#         -1, 1, 1,
+#         expert_parallel_size) 
+#     if model_parallel_initialized():
+#         return
+#     assert torch.distributed.is_initialized()
+#     world_size = expert_parallel_size
+#     backend = backend or torch.distributed.get_backend(
+#         get_world_group().device_group)
+#     num_expert_parallel_groups = expert_tensor_parallel_size
+#     num_expert_tensor_parallel_groups = expert_parallel_size
+
+#     # global _EP
+#     # group_ranks = []
+#     # for i in range(num_expert_parallel_groups):
+#     #     ranks = list(range(i + world_size, world_size + world_size, num_expert_parallel_groups))
+#     #     group_ranks.append(ranks)
+#     # print(f"EP group_ranks is === {group_ranks}")
+#     # print(f"init_ascend_model_parallel_for_AE_split get_world_group().local_rank is === {get_world_group().local_rank}")
+#     # if get_world_group().local_rank in group_ranks[0]:
+#     #     _EP = init_model_parallel_group(group_ranks,
+#     #                                     get_world_group().local_rank,
+#     #                                     backend,
+#     #                                     group_name="ep")
+
+#     global _EP
+#     assert _EP is None, ("expert parallel group is already initialized")
+#     group_ranks = all_ranks.transpose(1, 2).reshape(
+#         -1, 1 * expert_parallel_size).unbind(0)
+#     group_ranks = [x.tolist() for x in group_ranks]
+#     #print(f"vllm ascend _EP group_ranks is === {group_ranks}")
+
+#     _EP = init_model_parallel_group(group_ranks,
+#                                 get_world_group().local_rank,
+#                                 backend,
+#                                 group_name="ep")
+
+#     # global _TP
+#     # group_ranks = []
+#     # for i in range(num_expert_parallel_groups):
+#     #     ranks = list(range(i, world_size, num_expert_parallel_groups))
+#     #     group_ranks.append(ranks)
+#     # print(f"TP group_ranks is === {group_ranks}")
+#     # print(f"init_ascend_model_parallel_for_AE_split get_world_group().local_rank is === {get_world_group().local_rank}")
+#     # if get_world_group().local_rank in group_ranks[0]:
+#     #     _TP = init_model_parallel_group(group_ranks,
+#     #                                     get_world_group().local_rank,
+#     #                                     backend,
+#     #                                     group_name="tp")
+
+#     global _AE
+#     group_ranks = []
+#     for i in range(expert_parallel_size):
+#         ranks = list(range(i, expert_parallel_size * 2, expert_parallel_size))
+#         group_ranks.append(ranks)
+#     #print(f"_AE group_ranks is === {group_ranks}")
+#     _AE = init_model_parallel_group(group_ranks,
+#                                     get_world_group().local_rank,
+#                                     backend,
+#                                     group_name="ae")
+
+#     group_ranks = []
+#     global _ETP
+#     for i in range(num_expert_tensor_parallel_groups * 2):
+#         ranks = list(
+#             range(i * expert_tensor_parallel_size,
+#                   (i + 1) * expert_tensor_parallel_size))
+#         group_ranks.append(ranks)
+#     # print(f"_ETP group_ranks is === {group_ranks}")
+
+    # _ETP = init_model_parallel_group(group_ranks,
+    #                                     get_world_group().local_rank,
+    #                                     backend,
+    #                                     group_name="etp")
 
 def init_model_parallel_group(
     group_ranks: list[list[int]],
@@ -916,11 +1079,15 @@ def get_dp_group() -> GroupCoordinator:
 
 _EP: Optional[GroupCoordinator] = None
 
+_AFD: Optional[ProcessGroup] = None
 
 def get_ep_group() -> GroupCoordinator:
     assert _EP is not None, ("expert parallel group is not initialized")
     return _EP
 
+def get_afd_group() -> ProcessGroup:
+    assert _AFD is not None, ("afd is not initialized")
+    return _AFD
 
 def get_pp_group() -> GroupCoordinator:
     assert _PP is not None, (
@@ -973,7 +1140,7 @@ def init_distributed_environment(
     local_rank: int = -1,
     backend: str = "nccl",
 ):
-    logger.debug(
+    logger.info(
         "world_size=%d rank=%d local_rank=%d "
         "distributed_init_method=%s backend=%s", world_size, rank, local_rank,
         distributed_init_method, backend)

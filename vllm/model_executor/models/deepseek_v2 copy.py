@@ -35,7 +35,7 @@ from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import (CacheConfig, ModelConfig, VllmConfig,
                          get_current_vllm_config)
-from vllm.distributed import (get_ep_group, get_pp_group, get_world_group, get_afd_group,
+from vllm.distributed import (get_ep_group, get_pp_group,
                               get_tensor_model_parallel_world_size)
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import FusedMoE
@@ -59,10 +59,6 @@ from .interfaces import MixtureOfExperts, SupportsPP
 from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
-from vllm.logger import init_logger
-
-
-logger = init_logger(__name__)
 
 
 class DeepseekV2MLP(nn.Module):
@@ -548,18 +544,13 @@ class DeepseekV2DecoderLayer(nn.Module):
         cache_config: Optional[CacheConfig] = None,
         quant_config: Optional[QuantizationConfig] = None,
         enable_eplb: bool = False,
-        role: bool = True
     ) -> None:
         super().__init__()
-        logger.info("*"*50)
-        logger.info("decoder init")
-
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
         rope_scaling = getattr(config, "rope_scaling", None)
         max_position_embeddings = getattr(config, "max_position_embeddings",
                                           8192)
-        self.role = role
         # DecoderLayers are created with `make_layers` which passes the prefix
         # with the layer's index.
         layer_idx = int(prefix.split(sep='.')[-1])
@@ -568,69 +559,46 @@ class DeepseekV2DecoderLayer(nn.Module):
             attn_cls = DeepseekV2MLAAttention
         else:
             attn_cls = DeepseekV2Attention
-        if self.role is None or role == "attn": # need a better mechanism to check AE group
-            self.self_attn = attn_cls(
+        self.self_attn = attn_cls(
+            config=config,
+            hidden_size=self.hidden_size,
+            num_heads=config.num_attention_heads,
+            qk_nope_head_dim=config.qk_nope_head_dim,
+            qk_rope_head_dim=config.qk_rope_head_dim,
+            v_head_dim=config.v_head_dim,
+            q_lora_rank=config.q_lora_rank
+            if hasattr(config, "q_lora_rank") else None,
+            kv_lora_rank=config.kv_lora_rank,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
+            max_position_embeddings=max_position_embeddings,
+            cache_config=cache_config,
+            quant_config=quant_config,
+            prefix=f"{prefix}.self_attn",
+        )
+
+        if (config.n_routed_experts is not None
+                and layer_idx >= config.first_k_dense_replace
+                and layer_idx % config.moe_layer_freq == 0):
+            self.mlp = DeepseekV2MoE(
                 config=config,
-                hidden_size=self.hidden_size,
-                num_heads=config.num_attention_heads,
-                qk_nope_head_dim=config.qk_nope_head_dim,
-                qk_rope_head_dim=config.qk_rope_head_dim,
-                v_head_dim=config.v_head_dim,
-                q_lora_rank=config.q_lora_rank
-                if hasattr(config, "q_lora_rank") else None,
-                kv_lora_rank=config.kv_lora_rank,
-                rope_theta=rope_theta,
-                rope_scaling=rope_scaling,
-                max_position_embeddings=max_position_embeddings,
-                cache_config=cache_config,
                 quant_config=quant_config,
-                prefix=f"{prefix}.self_attn",
+                prefix=f"{prefix}.mlp",
+                enable_eplb=enable_eplb,
             )
-        if self.role is None or role == "ffn":
-            if (config.n_routed_experts is not None
-                    and layer_idx >= config.first_k_dense_replace
-                    and layer_idx % config.moe_layer_freq == 0):
-                self.mlp = DeepseekV2MoE(
-                    config=config,
-                    quant_config=quant_config,
-                    prefix=f"{prefix}.mlp",
-                    enable_eplb=enable_eplb,
-                )
-            else:
-                self.mlp = DeepseekV2MLP(
-                    hidden_size=config.hidden_size,
-                    intermediate_size=config.intermediate_size,
-                    hidden_act=config.hidden_act,
-                    quant_config=quant_config,
-                    prefix=f"{prefix}.mlp",
-                )
+        else:
+            self.mlp = DeepseekV2MLP(
+                hidden_size=config.hidden_size,
+                intermediate_size=config.intermediate_size,
+                hidden_act=config.hidden_act,
+                quant_config=quant_config,
+                prefix=f"{prefix}.mlp",
+            )
         self.input_layernorm = RMSNorm(config.hidden_size,
                                        eps=config.rms_norm_eps)
         self.post_attention_layernorm = RMSNorm(config.hidden_size,
                                                 eps=config.rms_norm_eps)
         self.routed_scaling_factor = config.routed_scaling_factor
-
-
-    def forward_ffn(self):
-        assert self.role == "ffn"
-        logger.info(f"ffn decoder layer {self.layer_idx} forwarding")
-        
-        ae_group = get_afd_group()
-        size_tensor = torch.zeros((2),dtype=torch.int64).cuda()
-        torch.distributed.recv(size_tensor, 0, ae_group)
-        hidden_states = torch.zeros((size_tensor[0],size_tensor[1]), dtype=torch.bfloat16).cuda()
-        torch.distributed.recv(hidden_states, 0, ae_group)
-        hidden_states = self.mlp(hidden_states)
-        if isinstance(self.mlp,
-                    DeepseekV2MLP) and hidden_states.dtype == torch.float16:
-            # Fix FP16 overflow
-            # Scaling the DeepseekV2MLP output, it is the input of
-            # input_layernorm of next decoder layer.
-            # The scaling of DeepseekV2MOE output would be done in the forward
-            # of DeepseekV2MOE
-            hidden_states *= 1. / self.routed_scaling_factor
-
-        torch.distributed.send(hidden_states, 0, ae_group)
 
     def forward(
         self,
@@ -638,7 +606,6 @@ class DeepseekV2DecoderLayer(nn.Module):
         hidden_states: torch.Tensor,
         residual: Optional[torch.Tensor],
     ) -> torch.Tensor:
-
         # Self Attention
         if residual is None:
             residual = hidden_states
@@ -646,43 +613,34 @@ class DeepseekV2DecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-        if self.role is not None: # This statement should make sense no matter AE is on/off
-            if self.role == "attn":
-                logger.info(f"attn decoder {self.layer_idx} forwarding")
-                hidden_states = self.self_attn(
-                    positions=positions,
-                    hidden_states=hidden_states,
-                )
+        hidden_states = self.self_attn(
+            positions=positions,
+            hidden_states=hidden_states,
+        )
 
-                if hidden_states.dtype == torch.float16:
-                    # Fix FP16 overflow
-                    # We scale both hidden_states and residual before
-                    # rmsnorm, and rmsnorm result would not affect by scale.
-                    hidden_states *= 1. / self.routed_scaling_factor
-                    if self.layer_idx == 0:
-                        # The residual is shared by all layers, we only scale it on
-                        # first layer.
-                        residual *= 1. / self.routed_scaling_factor
+        if hidden_states.dtype == torch.float16:
+            # Fix FP16 overflow
+            # We scale both hidden_states and residual before
+            # rmsnorm, and rmsnorm result would not affect by scale.
+            hidden_states *= 1. / self.routed_scaling_factor
+            if self.layer_idx == 0:
+                # The residual is shared by all layers, we only scale it on
+                # first layer.
+                residual *= 1. / self.routed_scaling_factor
 
-                # Fully Connected
-                hidden_states, residual = self.post_attention_layernorm(
-                    hidden_states, residual)
-                ae_group = get_afd_group()
-                size_tensor = torch.tensor(hidden_states.size()).cuda()
-                torch.distributed.send(size_tensor, 1, ae_group)
-                torch.distributed.send(hidden_states, 1, ae_group)
-                torch.distributed.recv(hidden_states, 1, ae_group) # result from moe
-            else:
-                hidden_states = self.mlp(hidden_states)
-                logger.info("ffn forwarding")
-                if isinstance(self.mlp,
-                            DeepseekV2MLP) and hidden_states.dtype == torch.float16:
-                    # Fix FP16 overflow
-                    # Scaling the DeepseekV2MLP output, it is the input of
-                    # input_layernorm of next decoder layer.
-                    # The scaling of DeepseekV2MOE output would be done in the forward
-                    # of DeepseekV2MOE
-                    hidden_states *= 1. / self.routed_scaling_factor
+        # Fully Connected
+        hidden_states, residual = self.post_attention_layernorm(
+            hidden_states, residual)
+        hidden_states = self.mlp(hidden_states)
+
+        if isinstance(self.mlp,
+                      DeepseekV2MLP) and hidden_states.dtype == torch.float16:
+            # Fix FP16 overflow
+            # Scaling the DeepseekV2MLP output, it is the input of
+            # input_layernorm of next decoder layer.
+            # The scaling of DeepseekV2MOE output would be done in the forward
+            # of DeepseekV2MOE
+            hidden_states *= 1. / self.routed_scaling_factor
 
         return hidden_states, residual
 
@@ -703,8 +661,6 @@ class DeepseekV2Model(nn.Module):
         self.config = config
 
         self.vocab_size = config.vocab_size
-        self.role = vllm_config.additional_config.get(
-            "role", None)
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
@@ -724,7 +680,6 @@ class DeepseekV2Model(nn.Module):
                 cache_config=cache_config,
                 quant_config=quant_config,
                 enable_eplb=enable_eplb,
-                role = self.role
             ),
             prefix=f"{prefix}.layers")
 
@@ -781,8 +736,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
         quant_config = vllm_config.quant_config
         self.config = config
         self.quant_config = quant_config
-        self.role = vllm_config.additional_config.get(
-            "role", None)
 
         # `packed_modules_mapping` needs to be modified before
         # initializing DeepseekV2Model, as it is passed inplace to
@@ -821,14 +774,10 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                 continue
 
             assert isinstance(layer, DeepseekV2DecoderLayer)
-            if (self.role is None or self.role == "ffn") and isinstance(layer.mlp, DeepseekV2MoE):
+            if isinstance(layer.mlp, DeepseekV2MoE):
                 # Pick last one layer since the first ones may be dense layers.
                 example_moe = layer.mlp
                 self.moe_layers.append(layer.mlp.experts)
-
-
-        if self.role == "attn":
-            return
 
         if example_moe is None:
             raise RuntimeError("No DeepseekV2MoE layer found in model.layers.")
@@ -877,14 +826,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
 
-
-    def forward_ffn(self):
-        assert self.role == "ffn"
-        logger.info("forwarding ffn")
-        for layer in self.model.layers[:]:
-            layer.forward_ffn()
-
-
     def forward(
         self,
         input_ids: torch.Tensor,
@@ -917,21 +858,17 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
 
         # Params for weights, fp8 weight scales, fp8 activation scales
         # (param_name, weight_name, expert_id, shard_id)
-        vllm_config = get_current_vllm_config()
         expert_params_mapping = FusedMoE.make_expert_params_mapping(
             ckpt_gate_proj_name="gate_proj",
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
             num_experts=self.config.n_routed_experts,
-            num_redundant_experts=vllm_config.parallel_config.num_redundant_experts)
+            num_redundant_experts=self.num_redundant_experts)
 
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
             if "rotary_emb.inv_freq" in name:
-                continue
-
-            if self.role == "attn" and self.is_moe(name):
                 continue
 
             spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
@@ -981,8 +918,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                     # Anyway, this is an expert weight and should not be
                     # attempted to load as other weights later
                     is_expert_weight = True
-                    if self.role is not None and self.role == "attn":
-                        continue
 
                     # Do not modify `name` since the loop may continue here
                     # Instead, create a new variable
@@ -1007,8 +942,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                         name = name_mapped
                         break
                 else:
-                    if self.role == "ffn" and not self.is_moe(name) and not self.is_moe_other(name):
-                        continue
                     if is_expert_weight:
                         # We've checked that this is an expert weight
                         # However it's not mapped locally to this rank
@@ -1035,19 +968,6 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
 
         return loaded_params
 
-    def is_moe(self,name):
-        if "shared_experts" in name or "experts" in name or "gate" in name \
-            or "up" in name or "down" in name:
-            return True
-        return False
-
-    # MoE 和 attn 都要加载
-    def is_moe_other(self,name):
-        if "lm_head" in name or "model.norm.weight" in name or "embed_tokens" in name \
-            or "input_layernorm" in name or "post_attention_layernorm" in name:
-            # or "model.layers.0.self_attn.o_proj.weight" in name:# for init kv cache
-            return True
-        return False
 
 class DeepseekV3ForCausalLM(DeepseekV2ForCausalLM):
     pass

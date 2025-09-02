@@ -5,7 +5,7 @@ import copy
 import gc
 import os
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import torch
 import torch.distributed
@@ -14,7 +14,7 @@ import torch.nn as nn
 import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed import (ensure_model_parallel_initialized,
-                              init_distributed_environment,
+                              init_distributed_environment, init_afd_process_group,
                               set_custom_all_reduce)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.distributed.parallel_state import get_pp_group, get_tp_group
@@ -32,13 +32,13 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
+from datetime import timedelta
 
 logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.core.sched.output import SchedulerOutput
-
 
 class Worker(WorkerBase):
 
@@ -56,6 +56,13 @@ class Worker(WorkerBase):
                          rank=rank,
                          distributed_init_method=distributed_init_method,
                          is_driver_worker=is_driver_worker)
+        logger.info("*"*50)
+        logger.info(f"vllm_config: {vllm_config}")
+        logger.info(f"local_rank: {local_rank}")
+        logger.info(f"rank: {rank}")
+        logger.info(f"distributed_init_method: {distributed_init_method}")
+        logger.info(f"is_driver_worker: {is_driver_worker}")
+        logger.info("*"*50)
 
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
@@ -188,6 +195,20 @@ class Worker(WorkerBase):
         else:
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
+
+
+        role = self.vllm_config.additional_config.get("role", None)
+        world_rank = 0 if role == "attn" else 1
+
+        init_afd_process_group(
+            backend="nccl",
+            init_method="tcp://127.0.0.1:29500",
+            world_size=2,
+            rank=world_rank,
+            group_name="afd",
+            timeout=timedelta(minutes=2),
+        )
+
         # Initialize the distributed environment.
         init_worker_distributed_environment(self.vllm_config, self.rank,
                                             self.distributed_init_method,
@@ -364,6 +385,9 @@ class Worker(WorkerBase):
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
 
+        logger.info("-"*50)
+        logger.info(f"scheduler_output: {scheduler_output}")
+        logger.info(f"intermediate_tensors: {intermediate_tensors}")
         output = self.model_runner.execute_model(scheduler_output,
                                                  intermediate_tensors)
 
