@@ -31,6 +31,7 @@ import torch
 from torch import nn
 from transformers import DeepseekV2Config, DeepseekV3Config
 
+import vllm.distributed.parallel_state as ps
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import (CacheConfig, ModelConfig, VllmConfig,
@@ -615,11 +616,14 @@ class DeepseekV2DecoderLayer(nn.Module):
         assert self.role == "ffn"
         logger.info(f"ffn decoder layer {self.layer_idx} forwarding")
         
-        ae_group = get_afd_group()
-        size_tensor = torch.zeros((2),dtype=torch.int64).cuda()
-        torch.distributed.recv(size_tensor, 0, ae_group)
-        hidden_states = torch.zeros((size_tensor[0],size_tensor[1]), dtype=torch.bfloat16).cuda()
-        torch.distributed.recv(hidden_states, 0, ae_group)
+        intermediate_tensors = ps._AFD_CONNECTOR.recv_attn_output()
+        hidden_states = intermediate_tensors["hidden_states"]
+
+        # ae_group = get_afd_group()
+        # size_tensor = torch.zeros((2),dtype=torch.int64).cuda()
+        # torch.distributed.recv(size_tensor, 0, ae_group)
+        # hidden_states = torch.zeros((size_tensor[0],size_tensor[1]), dtype=torch.bfloat16).cuda()
+        # torch.distributed.recv(hidden_states, 0, ae_group)
         hidden_states = self.mlp(hidden_states)
         if isinstance(self.mlp,
                     DeepseekV2MLP) and hidden_states.dtype == torch.float16:
@@ -630,7 +634,10 @@ class DeepseekV2DecoderLayer(nn.Module):
             # of DeepseekV2MOE
             hidden_states *= 1. / self.routed_scaling_factor
 
-        torch.distributed.send(hidden_states, 0, ae_group)
+        ps._AFD_CONNECTOR.send_ffn_output(IntermediateTensors({
+                "hidden_states": hidden_states,
+            }))
+        # torch.distributed.send(hidden_states, 0, ae_group)
 
     def forward(
         self,
@@ -669,9 +676,14 @@ class DeepseekV2DecoderLayer(nn.Module):
                     hidden_states, residual)
                 ae_group = get_afd_group()
                 size_tensor = torch.tensor(hidden_states.size()).cuda()
-                torch.distributed.send(size_tensor, 1, ae_group)
-                torch.distributed.send(hidden_states, 1, ae_group)
-                torch.distributed.recv(hidden_states, 1, ae_group) # result from moe
+                ps._AFD_CONNECTOR.send_attn_output(IntermediateTensors({
+                    "hidden_states": hidden_states,
+                }))
+                hidden_states = ps._AFD_CONNECTOR.recv_ffn_output()['hidden_states']
+
+                # torch.distributed.send(size_tensor, 1, ae_group)
+                # torch.distributed.send(hidden_states, 1, ae_group)
+                # torch.distributed.recv(hidden_states, 1, ae_group) # result from moe
             else:
                 hidden_states = self.mlp(hidden_states)
                 logger.info("ffn forwarding")
@@ -1007,7 +1019,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                         name = name_mapped
                         break
                 else:
-                    if self.role == "ffn" and not self.is_moe(name) and not self.is_moe_other(name):
+                    if self.role == "ffn" and not self.is_moe(name) and not self.is_common(name):
                         continue
                     if is_expert_weight:
                         # We've checked that this is an expert weight
@@ -1041,8 +1053,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
             return True
         return False
 
-    # MoE 和 attn 都要加载
-    def is_moe_other(self,name):
+    def is_common(self,name):
         if "lm_head" in name or "model.norm.weight" in name or "embed_tokens" in name \
             or "input_layernorm" in name or "post_attention_layernorm" in name:
             # or "model.layers.0.self_attn.o_proj.weight" in name:# for init kv cache

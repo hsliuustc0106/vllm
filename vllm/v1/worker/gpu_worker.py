@@ -5,19 +5,21 @@ import copy
 import gc
 import os
 from contextlib import AbstractContextManager, nullcontext
-from typing import TYPE_CHECKING, Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import torch.distributed
 import torch.nn as nn
 
 import vllm.envs as envs
+import vllm.distributed.parallel_state as ps
 from vllm.config import VllmConfig
-from vllm.distributed import (ensure_model_parallel_initialized,
+from vllm.distributed.afd.ncclconnector import ncclconnector
+from vllm.distributed import (ensure_model_parallel_initialized, init_model_parallel_group,
                               init_distributed_environment, init_afd_process_group,
                               set_custom_all_reduce)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
-from vllm.distributed.parallel_state import get_pp_group, get_tp_group
+from vllm.distributed.parallel_state import get_pp_group, get_tp_group, DefaultProcessGroupSwitcher, _get_default_group
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
@@ -32,6 +34,7 @@ from vllm.v1.outputs import EMPTY_MODEL_RUNNER_OUTPUT, ModelRunnerOutput
 from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
+
 from datetime import timedelta
 
 logger = init_logger(__name__)
@@ -197,17 +200,17 @@ class Worker(WorkerBase):
                 f"Not support device type: {self.device_config.device}")
 
 
-        role = self.vllm_config.additional_config.get("role", None)
-        world_rank = 0 if role == "attn" else 1
+        # role = self.vllm_config.additional_config.get("role", None)
+        # world_rank = 0 if role == "attn" else 1
 
-        init_afd_process_group(
-            backend="nccl",
-            init_method="tcp://127.0.0.1:29500",
-            world_size=2,
-            rank=world_rank,
-            group_name="afd",
-            timeout=timedelta(minutes=2),
-        )
+        # init_afd_process_group(
+        #     backend="nccl",
+        #     init_method="tcp://127.0.0.1:29500",
+        #     world_size=2,
+        #     rank=world_rank,
+        #     group_name="afd",
+        #     timeout=timedelta(minutes=2),
+        # )
 
         # Initialize the distributed environment.
         init_worker_distributed_environment(self.vllm_config, self.rank,
@@ -619,6 +622,39 @@ class Worker(WorkerBase):
     ) -> None:
         self.model_runner.save_tensorized_model(
             tensorizer_config=tensorizer_config, )
+
+class AFDWorker(Worker):
+    def init_device(self):
+        super().init_device()
+
+        role = self.vllm_config.additional_config.get("role", None)
+        world_rank = 0 if role == "attn" else 1
+        logger.info("AFD worker building")
+        afd_pg = init_afd_process_group(
+            backend="nccl",
+            init_method="tcp://127.0.0.1:29500",
+            world_size=2,
+            rank=world_rank,
+            group_name="afd",
+            timeout=timedelta(minutes=2),
+        )
+
+        default_pg_switcher = DefaultProcessGroupSwitcher(
+            _get_default_group(), afd_pg
+        )
+        ffn_ranks = [1]
+        attn_ranks = [0]
+        with default_pg_switcher:
+            sub_group_ranks = []
+            for i in range(len(ffn_ranks)):
+                ranks = list([attn_ranks[i],ffn_ranks[i]])
+                sub_group_ranks.append(ranks)
+            ae_group = init_model_parallel_group(sub_group_ranks,
+                                        0,
+                                        backend='nccl', 
+                                        group_name="ae")
+
+            ps._AFD_CONNECTOR = ncclconnector(ae_group)
 
 
 def init_worker_distributed_environment(

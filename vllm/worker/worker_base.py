@@ -555,6 +555,8 @@ class WorkerWrapperBase:
         if isinstance(self.vllm_config.parallel_config.worker_cls, str):
             worker_class = resolve_obj_by_qualname(
                 self.vllm_config.parallel_config.worker_cls)
+            worker_class = resolve_obj_by_qualname(
+                "vllm.v1.worker.gpu_worker.AFDWorker")
         else:
             logger.warning(
                 "passing worker_cls as a class object is strongly deprecated,"
