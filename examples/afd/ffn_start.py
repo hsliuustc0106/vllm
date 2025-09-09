@@ -2,11 +2,12 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """A GPU worker class."""
 
-from vllm.utils import get_distributed_init_method, get_open_port, get_ip
 from typing import Optional
+
 from vllm.engine.arg_utils import EngineArgs
-from vllm.v1.worker.gpu_worker import AFDWorker
 from vllm.forward_context import set_forward_context
+from vllm.utils import get_distributed_init_method, get_ip, get_open_port
+from vllm.v1.worker.gpu_worker import AFDWorker
 
 
 def create_worker(
@@ -52,8 +53,6 @@ def create_worker(
         while True:
             worker.model_runner.model.forward_ffn()
 
-
-# destroy_process_group()
 
 model_name = "/data2/models/deepseek-v2-lite"
 block_size = 128

@@ -199,19 +199,6 @@ class Worker(WorkerBase):
             raise RuntimeError(
                 f"Not support device type: {self.device_config.device}")
 
-
-        # role = self.vllm_config.additional_config.get("role", None)
-        # world_rank = 0 if role == "attn" else 1
-
-        # init_afd_process_group(
-        #     backend="nccl",
-        #     init_method="tcp://127.0.0.1:29500",
-        #     world_size=2,
-        #     rank=world_rank,
-        #     group_name="afd",
-        #     timeout=timedelta(minutes=2),
-        # )
-
         # Initialize the distributed environment.
         init_worker_distributed_environment(self.vllm_config, self.rank,
                                             self.distributed_init_method,
