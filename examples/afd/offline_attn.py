@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from vllm import LLM, SamplingParams
 
 prompts = [
@@ -5,8 +7,12 @@ prompts = [
 ]
 
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
-#llm = LLM(model="/data2/models/Qwen3-0.6B")
-llm = LLM(model="/data2/models/deepseek-v2-lite", enforce_eager=True, additional_config={"role": "attn"})
+# llm = LLM(model="/data2/models/Qwen3-0.6B")
+llm = LLM(
+    model="/data2/models/deepseek-v2-lite",
+    enforce_eager=True,
+    additional_config={"role": "attn"},
+)
 
 outputs = llm.generate(prompts, sampling_params)
 

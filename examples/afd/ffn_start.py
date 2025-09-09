@@ -28,9 +28,7 @@ def create_worker(
     )
     engine_config = engine_args.create_engine_config()
 
-    distributed_init_method = get_distributed_init_method(
-        get_ip(), get_open_port()
-    )
+    distributed_init_method = get_distributed_init_method(get_ip(), get_open_port())
 
     worker = AFDWorker(
         vllm_config=engine_config,

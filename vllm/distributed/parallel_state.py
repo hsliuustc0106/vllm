@@ -29,6 +29,7 @@ import weakref
 from collections import namedtuple
 from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
+from datetime import timedelta
 from multiprocessing import shared_memory
 from typing import Any, Callable, Optional, Union
 from unittest.mock import patch
@@ -36,29 +37,21 @@ from unittest.mock import patch
 import torch
 import torch.distributed
 from torch.distributed import Backend, ProcessGroup
+from torch.distributed.distributed_c10d import (PrefixStore, Store,
+                                                _new_process_group_helper,
+                                                _update_default_pg, _world,
+                                                default_pg_timeout, rendezvous)
 from typing_extensions import deprecated
 
 import vllm.envs as envs
+from vllm.distributed.afd.AFDconnector import AFDConnectorBase
 from vllm.distributed.device_communicators.base_device_communicator import (
     DeviceCommunicatorBase)
 from vllm.distributed.utils import StatelessProcessGroup
 from vllm.logger import init_logger
 from vllm.utils import (direct_register_custom_op, get_distributed_init_method,
                         resolve_obj_by_qualname, supports_custom_op)
-from vllm.distributed.afd.AFDconnector import AFDConnectorBase
 
-from torch.distributed.distributed_c10d import (
-    PrefixStore,
-    Store,
-    _new_process_group_helper,
-    _world,
-    default_pg_timeout,
-    rendezvous,
-    _get_default_group,
-    _update_default_pg,
-)
-
-from datetime import timedelta
 
 @dataclass
 class GraphCaptureContext:
@@ -895,8 +888,7 @@ def init_afd_process_group(
     pg_options: Optional[Any] = None,
 ):
     assert (store is None) or (init_method is None), (
-        "Cannot specify both init_method and store."
-    )
+        "Cannot specify both init_method and store.")
 
     if store is not None:
         assert world_size > 0, "world_size must be positive if using store"
@@ -913,16 +905,16 @@ def init_afd_process_group(
         timeout = default_pg_timeout
 
     if store is None:
-        rendezvous_iterator = rendezvous(
-            init_method, rank, world_size, timeout=timeout
-        )
+        rendezvous_iterator = rendezvous(init_method,
+                                         rank,
+                                         world_size,
+                                         timeout=timeout)
         store, rank, world_size = next(rendezvous_iterator)
         store.set_timeout(timeout)
         store = PrefixStore(group_name, store)
 
-    pg_options_param_name = (
-        "backend_options" if str(torch.__version__) >= "2.6" else "pg_options"
-    )
+    pg_options_param_name = ("backend_options" if str(torch.__version__)
+                             >= "2.6" else "pg_options")
     pg, _ = _new_process_group_helper(
         world_size,
         rank,
@@ -940,6 +932,7 @@ def init_afd_process_group(
 
 
 class DefaultProcessGroupSwitcher:
+
     def __init__(self, default_group, new_default_group):
         self.default_group = default_group
         self.new_default_group = new_default_group
@@ -998,13 +991,16 @@ _EP: Optional[GroupCoordinator] = None
 
 _AFD_CONNECTOR: Optional[AFDConnectorBase] = None
 
+
 def get_ep_group() -> GroupCoordinator:
     assert _EP is not None, ("expert parallel group is not initialized")
     return _EP
 
+
 def get_afd_connector() -> ProcessGroup:
     assert _AFD_CONNECTOR is not None, ("afd is not initialized")
     return _AFD_CONNECTOR
+
 
 def get_pp_group() -> GroupCoordinator:
     assert _PP is not None, (

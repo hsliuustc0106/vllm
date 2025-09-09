@@ -1,6 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from abc import ABC, abstractmethod
-from typing import Optional
 from dataclasses import dataclass
+from typing import Optional
 
 import torch
 from torch.distributed import ProcessGroup
@@ -23,8 +25,8 @@ class AFDConnectorMetadata:
     moe_expert_num: Optional[int]  # number of moe experts
     shared_expert_num: Optional[int]  # number of share experts
     handle: Optional[
-        torch.Tensor
-    ]  # the communication handle given by the recv_attn_output  function
+        torch.
+        Tensor]  # the communication handle given by the recv_attn_output  function
 
 
 class AFDConnectorBase(ABC):

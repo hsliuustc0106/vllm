@@ -36,8 +36,9 @@ from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import (CacheConfig, ModelConfig, VllmConfig,
                          get_current_vllm_config)
-from vllm.distributed import (get_ep_group, get_pp_group, get_world_group,
+from vllm.distributed import (get_ep_group, get_pp_group,
                               get_tensor_model_parallel_world_size)
+from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -60,8 +61,6 @@ from .interfaces import MixtureOfExperts, SupportsPP
 from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
-from vllm.logger import init_logger
-
 
 logger = init_logger(__name__)
 
@@ -541,18 +540,16 @@ class DeepseekV2MLAAttention(nn.Module):
 
 class DeepseekV2DecoderLayer(nn.Module):
 
-    def __init__(
-        self,
-        config: Union[DeepseekV2Config, DeepseekV3Config],
-        prefix: str,
-        model_config: ModelConfig,
-        cache_config: Optional[CacheConfig] = None,
-        quant_config: Optional[QuantizationConfig] = None,
-        enable_eplb: bool = False,
-        role: bool = True
-    ) -> None:
+    def __init__(self,
+                 config: Union[DeepseekV2Config, DeepseekV3Config],
+                 prefix: str,
+                 model_config: ModelConfig,
+                 cache_config: Optional[CacheConfig] = None,
+                 quant_config: Optional[QuantizationConfig] = None,
+                 enable_eplb: bool = False,
+                 role: bool = True) -> None:
         super().__init__()
-        logger.info("*"*50)
+        logger.info("*" * 50)
         logger.info("decoder init")
 
         self.hidden_size = config.hidden_size
@@ -569,7 +566,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             attn_cls = DeepseekV2MLAAttention
         else:
             attn_cls = DeepseekV2Attention
-        if self.role is None or role == "attn": # need a better mechanism to check AE group
+        if self.role is None or role == "attn":  # need a better mechanism to check AE group
             self.self_attn = attn_cls(
                 config=config,
                 hidden_size=self.hidden_size,
@@ -577,8 +574,8 @@ class DeepseekV2DecoderLayer(nn.Module):
                 qk_nope_head_dim=config.qk_nope_head_dim,
                 qk_rope_head_dim=config.qk_rope_head_dim,
                 v_head_dim=config.v_head_dim,
-                q_lora_rank=config.q_lora_rank
-                if hasattr(config, "q_lora_rank") else None,
+                q_lora_rank=config.q_lora_rank if hasattr(
+                    config, "q_lora_rank") else None,
                 kv_lora_rank=config.kv_lora_rank,
                 rope_theta=rope_theta,
                 rope_scaling=rope_scaling,
@@ -611,11 +608,10 @@ class DeepseekV2DecoderLayer(nn.Module):
                                                 eps=config.rms_norm_eps)
         self.routed_scaling_factor = config.routed_scaling_factor
 
-
     def forward_ffn(self):
         assert self.role == "ffn"
         logger.info(f"ffn decoder layer {self.layer_idx} forwarding")
-        
+
         intermediate_tensors = ps._AFD_CONNECTOR.recv_attn_output()
         hidden_states = intermediate_tensors["hidden_states"]
 
@@ -626,7 +622,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         # torch.distributed.recv(hidden_states, 0, ae_group)
         hidden_states = self.mlp(hidden_states)
         if isinstance(self.mlp,
-                    DeepseekV2MLP) and hidden_states.dtype == torch.float16:
+                      DeepseekV2MLP) and hidden_states.dtype == torch.float16:
             # Fix FP16 overflow
             # Scaling the DeepseekV2MLP output, it is the input of
             # input_layernorm of next decoder layer.
@@ -634,7 +630,8 @@ class DeepseekV2DecoderLayer(nn.Module):
             # of DeepseekV2MOE
             hidden_states *= 1. / self.routed_scaling_factor
 
-        ps._AFD_CONNECTOR.send_ffn_output(IntermediateTensors({
+        ps._AFD_CONNECTOR.send_ffn_output(
+            IntermediateTensors({
                 "hidden_states": hidden_states,
             }))
         # torch.distributed.send(hidden_states, 0, ae_group)
@@ -653,7 +650,7 @@ class DeepseekV2DecoderLayer(nn.Module):
         else:
             hidden_states, residual = self.input_layernorm(
                 hidden_states, residual)
-        if self.role is not None: # This statement should make sense no matter AE is on/off
+        if self.role is not None:  # This statement should make sense no matter AE is on/off
             if self.role == "attn":
                 logger.info(f"attn decoder {self.layer_idx} forwarding")
                 hidden_states = self.self_attn(
@@ -676,10 +673,12 @@ class DeepseekV2DecoderLayer(nn.Module):
                     hidden_states, residual)
                 #ae_group = get_afd_group()
                 size_tensor = torch.tensor(hidden_states.size()).cuda()
-                ps._AFD_CONNECTOR.send_attn_output(IntermediateTensors({
-                    "hidden_states": hidden_states,
-                }))
-                hidden_states = ps._AFD_CONNECTOR.recv_ffn_output()['hidden_states']
+                ps._AFD_CONNECTOR.send_attn_output(
+                    IntermediateTensors({
+                        "hidden_states": hidden_states,
+                    }))
+                hidden_states = ps._AFD_CONNECTOR.recv_ffn_output(
+                )['hidden_states']
 
                 # torch.distributed.send(size_tensor, 1, ae_group)
                 # torch.distributed.send(hidden_states, 1, ae_group)
@@ -687,8 +686,8 @@ class DeepseekV2DecoderLayer(nn.Module):
             else:
                 hidden_states = self.mlp(hidden_states)
                 logger.info("ffn forwarding")
-                if isinstance(self.mlp,
-                            DeepseekV2MLP) and hidden_states.dtype == torch.float16:
+                if isinstance(self.mlp, DeepseekV2MLP
+                              ) and hidden_states.dtype == torch.float16:
                     # Fix FP16 overflow
                     # Scaling the DeepseekV2MLP output, it is the input of
                     # input_layernorm of next decoder layer.
@@ -715,8 +714,7 @@ class DeepseekV2Model(nn.Module):
         self.config = config
 
         self.vocab_size = config.vocab_size
-        self.role = vllm_config.additional_config.get(
-            "role", None)
+        self.role = vllm_config.additional_config.get("role", None)
 
         if get_pp_group().is_first_rank:
             self.embed_tokens = VocabParallelEmbedding(
@@ -729,15 +727,13 @@ class DeepseekV2Model(nn.Module):
 
         self.start_layer, self.end_layer, self.layers = make_layers(
             config.num_hidden_layers,
-            lambda prefix: DeepseekV2DecoderLayer(
-                config,
-                prefix,
-                model_config=model_config,
-                cache_config=cache_config,
-                quant_config=quant_config,
-                enable_eplb=enable_eplb,
-                role = self.role
-            ),
+            lambda prefix: DeepseekV2DecoderLayer(config,
+                                                  prefix,
+                                                  model_config=model_config,
+                                                  cache_config=cache_config,
+                                                  quant_config=quant_config,
+                                                  enable_eplb=enable_eplb,
+                                                  role=self.role),
             prefix=f"{prefix}.layers")
 
         if get_pp_group().is_last_rank:
@@ -793,8 +789,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
         quant_config = vllm_config.quant_config
         self.config = config
         self.quant_config = quant_config
-        self.role = vllm_config.additional_config.get(
-            "role", None)
+        self.role = vllm_config.additional_config.get("role", None)
 
         # `packed_modules_mapping` needs to be modified before
         # initializing DeepseekV2Model, as it is passed inplace to
@@ -833,11 +828,11 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                 continue
 
             assert isinstance(layer, DeepseekV2DecoderLayer)
-            if (self.role is None or self.role == "ffn") and isinstance(layer.mlp, DeepseekV2MoE):
+            if (self.role is None or self.role == "ffn") and isinstance(
+                    layer.mlp, DeepseekV2MoE):
                 # Pick last one layer since the first ones may be dense layers.
                 example_moe = layer.mlp
                 self.moe_layers.append(layer.mlp.experts)
-
 
         if self.role == "attn":
             return
@@ -889,13 +884,11 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
     def get_input_embeddings(self, input_ids: torch.Tensor) -> torch.Tensor:
         return self.model.get_input_embeddings(input_ids)
 
-
     def forward_ffn(self):
         assert self.role == "ffn"
         logger.info("forwarding ffn")
         for layer in self.model.layers[:]:
             layer.forward_ffn()
-
 
     def forward(
         self,
@@ -935,7 +928,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
             ckpt_down_proj_name="down_proj",
             ckpt_up_proj_name="up_proj",
             num_experts=self.config.n_routed_experts,
-            num_redundant_experts=vllm_config.parallel_config.num_redundant_experts)
+            num_redundant_experts=vllm_config.parallel_config.
+            num_redundant_experts)
 
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
@@ -1019,7 +1013,8 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
                         name = name_mapped
                         break
                 else:
-                    if self.role == "ffn" and not self.is_moe(name) and not self.is_common(name):
+                    if self.role == "ffn" and not self.is_moe(
+                            name) and not self.is_common(name):
                         continue
                     if is_expert_weight:
                         # We've checked that this is an expert weight
@@ -1047,18 +1042,19 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
 
         return loaded_params
 
-    def is_moe(self,name):
+    def is_moe(self, name):
         if "shared_experts" in name or "experts" in name or "gate" in name \
             or "up" in name or "down" in name:
             return True
         return False
 
-    def is_common(self,name):
+    def is_common(self, name):
         if "lm_head" in name or "model.norm.weight" in name or "embed_tokens" in name \
             or "input_layernorm" in name or "post_attention_layernorm" in name:
             # or "model.layers.0.self_attn.o_proj.weight" in name:# for init kv cache
             return True
         return False
+
 
 class DeepseekV3ForCausalLM(DeepseekV2ForCausalLM):
     pass

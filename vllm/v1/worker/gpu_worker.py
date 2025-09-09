@@ -5,21 +5,25 @@ import copy
 import gc
 import os
 from contextlib import AbstractContextManager, nullcontext
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import torch.distributed
 import torch.nn as nn
 
-import vllm.envs as envs
 import vllm.distributed.parallel_state as ps
+import vllm.envs as envs
 from vllm.config import VllmConfig
+from vllm.distributed import (ensure_model_parallel_initialized,
+                              init_afd_process_group,
+                              init_distributed_environment,
+                              init_model_parallel_group, set_custom_all_reduce)
 from vllm.distributed.afd.ncclconnector import ncclconnector
-from vllm.distributed import (ensure_model_parallel_initialized, init_model_parallel_group,
-                              init_distributed_environment, init_afd_process_group,
-                              set_custom_all_reduce)
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
-from vllm.distributed.parallel_state import get_pp_group, get_tp_group, DefaultProcessGroupSwitcher, _get_default_group
+from vllm.distributed.parallel_state import (DefaultProcessGroupSwitcher,
+                                             _get_default_group, get_pp_group,
+                                             get_tp_group)
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.model_executor import set_random_seed
@@ -35,13 +39,12 @@ from vllm.v1.utils import report_usage_stats
 from vllm.v1.worker.gpu_model_runner import GPUModelRunner
 from vllm.v1.worker.worker_base import WorkerBase
 
-from datetime import timedelta
-
 logger = init_logger(__name__)
 
 if TYPE_CHECKING:
     from vllm.model_executor.model_loader.tensorizer import TensorizerConfig
     from vllm.v1.core.sched.output import SchedulerOutput
+
 
 class Worker(WorkerBase):
 
@@ -59,13 +62,13 @@ class Worker(WorkerBase):
                          rank=rank,
                          distributed_init_method=distributed_init_method,
                          is_driver_worker=is_driver_worker)
-        logger.info("*"*50)
+        logger.info("*" * 50)
         logger.info(f"vllm_config: {vllm_config}")
         logger.info(f"local_rank: {local_rank}")
         logger.info(f"rank: {rank}")
         logger.info(f"distributed_init_method: {distributed_init_method}")
         logger.info(f"is_driver_worker: {is_driver_worker}")
-        logger.info("*"*50)
+        logger.info("*" * 50)
 
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
@@ -375,7 +378,7 @@ class Worker(WorkerBase):
                 get_pp_group().recv_tensor_dict(
                     all_gather_group=get_tp_group()))
 
-        logger.info("-"*50)
+        logger.info("-" * 50)
         logger.info(f"scheduler_output: {scheduler_output}")
         logger.info(f"intermediate_tensors: {intermediate_tensors}")
         output = self.model_runner.execute_model(scheduler_output,
@@ -610,7 +613,9 @@ class Worker(WorkerBase):
         self.model_runner.save_tensorized_model(
             tensorizer_config=tensorizer_config, )
 
+
 class AFDWorker(Worker):
+
     def init_device(self):
         super().init_device()
 
@@ -627,19 +632,18 @@ class AFDWorker(Worker):
         )
 
         default_pg_switcher = DefaultProcessGroupSwitcher(
-            _get_default_group(), afd_pg
-        )
+            _get_default_group(), afd_pg)
         ffn_ranks = [1]
         attn_ranks = [0]
         with default_pg_switcher:
             sub_group_ranks = []
             for i in range(len(ffn_ranks)):
-                ranks = list([attn_ranks[i],ffn_ranks[i]])
+                ranks = list([attn_ranks[i], ffn_ranks[i]])
                 sub_group_ranks.append(ranks)
             ae_group = init_model_parallel_group(sub_group_ranks,
-                                        0,
-                                        backend='nccl', 
-                                        group_name="ae")
+                                                 0,
+                                                 backend='nccl',
+                                                 group_name="ae")
 
             ps._AFD_CONNECTOR = ncclconnector(ae_group)
 
