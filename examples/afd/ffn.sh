@@ -1,0 +1,1 @@
+python fserve.py --model="/data2/models/deepseek-v2-lite" --tensor_parallel_size=2 --enable_expert_parallel --enforce-eager --additional-config='{"role":"ffn", "ffn_size":2, "attn_size":2}'

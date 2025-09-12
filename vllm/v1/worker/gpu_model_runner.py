@@ -3149,3 +3149,27 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 group_metadata[layer_name] = (common_metadata, metadata)
 
         return group_metadata
+
+
+class FFNModelRunner(GPUModelRunner):
+
+    def __init__(self, vllm_config: VllmConfig, device: torch.device):
+
+        super().__init__(vllm_config=vllm_config, device=device)
+        self.vllm_config = vllm_config
+        self.model_config = vllm_config.model_config
+
+    def execute_model(self):
+        print('ffn forward begain')
+        # TODO: use event replace
+        with set_forward_context(
+                None,
+                self.vllm_config,
+                #num_tokens=num_input_tokens,
+                #num_tokens_across_dp=num_tokens_across_dp,
+                #skip_cuda_graphs=skip_cuda_graphs,
+        ):
+            while True:
+                layers_num = len(self.model.model.layers)
+                for i in range(layers_num):
+                    self.model.model.layers[i].forward_ffn()

@@ -997,7 +997,7 @@ def get_ep_group() -> GroupCoordinator:
     return _EP
 
 
-def get_afd_connector() -> ProcessGroup:
+def get_afd_connector() -> AFDConnectorBase:
     assert _AFD_CONNECTOR is not None, ("afd is not initialized")
     return _AFD_CONNECTOR
 
