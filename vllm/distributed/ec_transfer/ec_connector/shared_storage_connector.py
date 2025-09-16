@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Optional
 
 import safetensors
 
@@ -134,18 +134,23 @@ class ECSharedStorageConnector(ECConnectorBase):
     def check_caches_exist(
         self,
         request: "Request",
+        index: Optional[int] = None,
     ) -> list[bool]:
         """
         Check if cache exist externally for each mm_data of request
         
         Args:
             request (Request): the request object.
+            index (Optional[int]): the index of the request in the batch.
 
         Returns:
             List of bool indicate that ith mm_data exist in cache or not
         """
         result = []
         request_id = request.request_id
+        if index is not None:
+            return self._found_match_for_mm_data(f"{request_id}_{index}")
+
         for input_id in range(len(request.mm_positions)):
             if self._found_match_for_mm_data(f"{request_id}_{input_id}"):
                 result.append(True)
