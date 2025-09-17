@@ -361,14 +361,6 @@ class WorkerProc:
         distributed_init_method: str,
         input_shm_handle: Handle,
     ):
-        logger.info("*" * 50)
-        logger.info(f"vllm_config: {vllm_config}")
-        logger.info(f"local_rank: {local_rank}")
-        logger.info(f"rank: {rank}")
-        logger.info(f"distributed_init_method: {distributed_init_method}")
-        logger.info(f"input_shm_handle: {input_shm_handle}")
-        logger.info("*" * 50)
-
         self.rank = rank
         wrapper = WorkerWrapperBase(vllm_config=vllm_config, rpc_rank=rank)
         # TODO: move `init_worker` to executor level as a collective rpc call

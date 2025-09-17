@@ -4,6 +4,7 @@
 import copy
 import gc
 import os
+import re
 from contextlib import AbstractContextManager, nullcontext
 from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Optional
@@ -20,7 +21,7 @@ from vllm.distributed import (ensure_model_parallel_initialized,
                               init_afd_process_group,
                               init_distributed_environment,
                               init_model_parallel_group, set_custom_all_reduce)
-from vllm.distributed.afd.ncclconnector import ncclconnector
+from vllm.distributed.afd.p2p_connector import P2PConnector
 from vllm.distributed.kv_transfer import ensure_kv_transfer_initialized
 from vllm.distributed.parallel_state import (DefaultProcessGroupSwitcher,
                                              get_pp_group, get_tp_group)
@@ -62,14 +63,6 @@ class Worker(WorkerBase):
                          rank=rank,
                          distributed_init_method=distributed_init_method,
                          is_driver_worker=is_driver_worker)
-        logger.info("*" * 50)
-        logger.info(f"vllm_config: {vllm_config}")
-        logger.info(f"local_rank: {local_rank}")
-        logger.info(f"rank: {rank}")
-        logger.info(f"distributed_init_method: {distributed_init_method}")
-        logger.info(f"is_driver_worker: {is_driver_worker}")
-        logger.info("*" * 50)
-
         if self.model_config.trust_remote_code:
             # note: lazy import to avoid importing torch before initializing
             from vllm.utils import init_cached_hf_modules
@@ -626,17 +619,29 @@ class AFDWorker(Worker):
         role = self.vllm_config.additional_config.get("role", None)
         logger.info("AFD worker building")
 
-        ffn_size = self.vllm_config.additional_config.get("ffn_size")
-        attn_size = self.vllm_config.additional_config.get("attn_size")
+        afd_size = self.vllm_config.additional_config.get("afd_size")
+        attn_size, ffn_size = map(
+            int,
+            re.match(r"(\d+)\D+(\d+)", afd_size).groups())
         ffn_ranks = [i for i in range(ffn_size, ffn_size + attn_size)]
         attn_ranks = [i for i in range(attn_size)]
         world_rank = self.rank if role == "attn" else self.rank + attn_size
         logger.info(
             f"world_size = {ffn_size + attn_size}, world_rank = {world_rank}")
 
+        ip = (
+            os.environ["MASTER_IP"]
+            if os.environ["MASTER_IP"] is not None
+            else "127.0.0.1"
+        )
+        port = (
+            os.environ["MASTER_PORT"]
+            if os.environ["MASTER_PORT"] is not None
+            else "29500"
+        )
         afd_pg = init_afd_process_group(
             backend="nccl",
-            init_method="tcp://127.0.0.1:29500",
+            init_method=f"tcp://{ip}:{port}",
             world_size=ffn_size + attn_size,
             rank=world_rank,
             group_name="afd",
@@ -652,10 +657,10 @@ class AFDWorker(Worker):
                 sub_group_ranks.append(ranks)
             ae_group = init_model_parallel_group(sub_group_ranks,
                                                  self.rank,
-                                                 backend='nccl',
+                                                 backend="nccl",
                                                  group_name="ae")
 
-            ps._AFD_CONNECTOR = ncclconnector(ae_group)
+            ps._AFD_CONNECTOR = P2PConnector(ae_group)
 
 
 def init_worker_distributed_environment(

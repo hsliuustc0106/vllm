@@ -7,7 +7,6 @@ prompts = [
 ]
 
 sampling_params = SamplingParams(temperature=0.8, top_p=0.95)
-# llm = LLM(model="/data2/models/Qwen3-0.6B")
 llm = LLM(
     model="/data2/models/deepseek-v2-lite",
     enforce_eager=True,

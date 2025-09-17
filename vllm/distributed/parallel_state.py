@@ -44,7 +44,7 @@ from torch.distributed.distributed_c10d import (PrefixStore, Store,
 from typing_extensions import deprecated
 
 import vllm.envs as envs
-from vllm.distributed.afd.AFDconnector import AFDConnectorBase
+from vllm.distributed.afd.afd_connector import AFDConnectorBase
 from vllm.distributed.device_communicators.base_device_communicator import (
     DeviceCommunicatorBase)
 from vllm.distributed.utils import StatelessProcessGroup
@@ -896,10 +896,7 @@ def init_afd_process_group(
     elif init_method is None:
         init_method = "env://"
 
-    if backend:
-        backend = Backend(backend)
-    else:
-        backend = Backend("undefined")
+    backend = Backend(backend) if backend else Backend("undefined")
 
     if timeout is None:
         timeout = default_pg_timeout
@@ -925,9 +922,7 @@ def init_afd_process_group(
         **{pg_options_param_name: pg_options},
         timeout=timeout,
     )
-    global _AFD
     _world.pg_group_ranks[pg] = {i: i for i in range(world_size)}
-    _AFD = pg
     return pg
 
 

@@ -25,23 +25,22 @@ class AFDConnectorMetadata:
     moe_expert_num: Optional[int]  # number of moe experts
     shared_expert_num: Optional[int]  # number of share experts
     handle: Optional[
-        torch.
-        Tensor]  # the communication handle given by the recv_attn_output  function
+        torch.Tensor
+    ]  # the communication handle given by the recv_attn_output  function
 
 
 class AFDConnectorBase(ABC):
-    metadata: AFDConnectorMetadata
-
     def __init__(self, process_group) -> None:
         super().__init__()
-        #self.metadata = AFDConnectorMetadata()
         self.process_group = process_group
 
     # -------------------------------------------------------------------
     #                         attn -> ffn
     # -------------------------------------------------------------------
     @abstractmethod
-    def send_attn_output(self, intermediate_tensors: IntermediateTensors):
+    def send_attn_output(
+        self, hidden_states: torch.Tensor, metadata: AFDConnectorMetadata
+    ):
         """
         This method will be called by the ATTN side.
 
@@ -51,7 +50,7 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recv_attn_output(self) -> IntermediateTensors:
+    def recv_attn_output(self) -> torch.Tensor:
         """
         This method will be called by the FFN side.
 
@@ -65,7 +64,9 @@ class AFDConnectorBase(ABC):
     #                                attn <- ffn
     # -------------------------------------------------------------------------
     @abstractmethod
-    def send_ffn_output(self, intermediate_tensors: IntermediateTensors):
+    def send_ffn_output(
+        self, hidden_states: torch.Tensor, metadata: AFDConnectorMetadata
+    ):
         """
         This method will be called by the FFN side.
 
@@ -76,7 +77,7 @@ class AFDConnectorBase(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def recv_ffn_output(self) -> IntermediateTensors:
+    def recv_ffn_output(self) -> torch.Tensor:
         """
         This method will be called by the ATTN side.
 

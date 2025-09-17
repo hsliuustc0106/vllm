@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """A GPU worker class."""
 
+import re
+
 import torch.multiprocessing as mp
 
 from vllm.engine.arg_utils import EngineArgs
@@ -22,7 +24,6 @@ def create_worker(
     distributed_init_method,
     is_driver_worker: bool = True,
 ):
-
     worker = AFDWorker(
         vllm_config=vllm_config,
         local_rank=rank,
@@ -38,9 +39,6 @@ def create_worker(
 
 
 if __name__ == "__main__":
-    # NOTE(simon):
-    # This section should be in sync with vllm/entrypoints/cli/main.py for CLI
-    # entrypoints.
     cli_env_setup()
     mp.set_start_method("spawn")
     parser = FlexibleArgumentParser(description="vLLM AFD FFN server.")
@@ -49,14 +47,17 @@ if __name__ == "__main__":
     validate_parsed_serve_args(args)
     engine_args = EngineArgs.from_cli_args(args)
     vllm_config = engine_args.create_engine_config()
-    ffn_size = vllm_config.additional_config.get("ffn_size")
-    attn_size = vllm_config.additional_config.get("attn_size")
+    afd_size = vllm_config.additional_config.get("afd_size")
+    if afd_size is None or afd_size == "":
+        raise ValueError("Afd size must be specified in additional_config")
 
+    attn_size, ffn_size = map(int, re.match(r"(\d+)\D+(\d+)", afd_size).groups())
     distributed_init_method = get_distributed_init_method(get_ip(), get_open_port())
 
     processes = []
     for rank in range(ffn_size):
-        p = mp.Process(target=create_worker, args=(vllm_config, rank, distributed_init_method))
+        p = mp.Process(
+            target=create_worker, args=(vllm_config, rank, distributed_init_method)
+        )
         processes.append(p)
         p.start()
-    #create_worker(engine_args)

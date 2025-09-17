@@ -31,12 +31,11 @@ import torch
 from torch import nn
 from transformers import DeepseekV2Config, DeepseekV3Config
 
-import vllm.distributed.parallel_state as ps
 from vllm.attention import Attention
 from vllm.compilation.decorators import support_torch_compile
 from vllm.config import (CacheConfig, ModelConfig, VllmConfig,
                          get_current_vllm_config)
-from vllm.distributed import (get_ep_group, get_pp_group,
+from vllm.distributed import (get_afd_connector, get_ep_group, get_pp_group,
                               get_tensor_model_parallel_world_size)
 from vllm.logger import init_logger
 from vllm.model_executor.layers.activation import SiluAndMul
@@ -62,7 +61,7 @@ from .utils import (PPMissingLayer, is_pp_missing_parameter,
                     make_empty_intermediate_tensors_factory, make_layers,
                     maybe_prefix)
 
-logger = init_logger(__name__)
+#logger = init_logger(__name__)
 
 
 class DeepseekV2MLP(nn.Module):
@@ -547,10 +546,10 @@ class DeepseekV2DecoderLayer(nn.Module):
                  cache_config: Optional[CacheConfig] = None,
                  quant_config: Optional[QuantizationConfig] = None,
                  enable_eplb: bool = False,
-                 role: bool = True) -> None:
+                 role: str = None) -> None:
         super().__init__()
-        logger.info("*" * 50)
-        logger.info("decoder init")
+        #logger.info("*" * 50)
+        #logger.info("decoder init")
 
         self.hidden_size = config.hidden_size
         rope_theta = getattr(config, "rope_theta", 10000)
@@ -566,7 +565,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             attn_cls = DeepseekV2MLAAttention
         else:
             attn_cls = DeepseekV2Attention
-        if self.role is None or role == "attn":  # need a better mechanism to check AE group
+        if self.role is None or role == "attn":
             self.self_attn = attn_cls(
                 config=config,
                 hidden_size=self.hidden_size,
@@ -610,16 +609,9 @@ class DeepseekV2DecoderLayer(nn.Module):
 
     def forward_ffn(self):
         assert self.role == "ffn"
-        logger.info(f"ffn decoder layer {self.layer_idx} forwarding")
-
-        intermediate_tensors = ps._AFD_CONNECTOR.recv_attn_output()
-        hidden_states = intermediate_tensors["hidden_states"]
-
-        # ae_group = get_afd_group()
-        # size_tensor = torch.zeros((2),dtype=torch.int64).cuda()
-        # torch.distributed.recv(size_tensor, 0, ae_group)
-        # hidden_states = torch.zeros((size_tensor[0],size_tensor[1]), dtype=torch.bfloat16).cuda()
-        # torch.distributed.recv(hidden_states, 0, ae_group)
+        #logger.info(f"ffn decoder layer {self.layer_idx} forwarding")
+        afd_connector = get_afd_connector()
+        hidden_states = afd_connector.recv_attn_output()
         hidden_states = self.mlp(hidden_states)
         if isinstance(self.mlp,
                       DeepseekV2MLP) and hidden_states.dtype == torch.float16:
@@ -630,11 +622,7 @@ class DeepseekV2DecoderLayer(nn.Module):
             # of DeepseekV2MOE
             hidden_states *= 1. / self.routed_scaling_factor
 
-        ps._AFD_CONNECTOR.send_ffn_output(
-            IntermediateTensors({
-                "hidden_states": hidden_states,
-            }))
-        # torch.distributed.send(hidden_states, 0, ae_group)
+        afd_connector.send_ffn_output(hidden_states, None)
 
     def forward(
         self,
@@ -652,7 +640,7 @@ class DeepseekV2DecoderLayer(nn.Module):
                 hidden_states, residual)
         if self.role is not None:  # This statement should make sense no matter AE is on/off
             if self.role == "attn":
-                logger.info(f"attn decoder {self.layer_idx} forwarding")
+                #logger.info(f"attn decoder {self.layer_idx} forwarding")
                 hidden_states = self.self_attn(
                     positions=positions,
                     hidden_states=hidden_states,
@@ -671,21 +659,13 @@ class DeepseekV2DecoderLayer(nn.Module):
                 # Fully Connected
                 hidden_states, residual = self.post_attention_layernorm(
                     hidden_states, residual)
-                #ae_group = get_afd_group()
-                size_tensor = torch.tensor(hidden_states.size()).cuda()
-                ps._AFD_CONNECTOR.send_attn_output(
-                    IntermediateTensors({
-                        "hidden_states": hidden_states,
-                    }))
-                hidden_states = ps._AFD_CONNECTOR.recv_ffn_output(
-                )['hidden_states']
+                afd_connector = get_afd_connector()
+                afd_connector.send_attn_output(hidden_states, None)
+                hidden_states = afd_connector.recv_ffn_output()
 
-                # torch.distributed.send(size_tensor, 1, ae_group)
-                # torch.distributed.send(hidden_states, 1, ae_group)
-                # torch.distributed.recv(hidden_states, 1, ae_group) # result from moe
             else:
                 hidden_states = self.mlp(hidden_states)
-                logger.info("ffn forwarding")
+                #logger.info("ffn forwarding")
                 if isinstance(self.mlp, DeepseekV2MLP
                               ) and hidden_states.dtype == torch.float16:
                     # Fix FP16 overflow
@@ -886,7 +866,7 @@ class DeepseekV2ForCausalLM(nn.Module, SupportsPP, MixtureOfExperts):
 
     def forward_ffn(self):
         assert self.role == "ffn"
-        logger.info("forwarding ffn")
+        #logger.info("forwarding ffn")
         for layer in self.model.layers[:]:
             layer.forward_ffn()
 
