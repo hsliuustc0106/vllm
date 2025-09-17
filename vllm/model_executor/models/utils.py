@@ -109,6 +109,7 @@ class AutoWeightsLoader:
         skip_prefixes: Optional[list[str]] = None,
         skip_substrs: Optional[list[str]] = None,
         ignore_unexpected_prefixes: Optional[list[str]] = None,
+        vllm_config=None,
     ) -> None:
         super().__init__()
 
@@ -118,6 +119,7 @@ class AutoWeightsLoader:
         self.ignore_unexpected_prefixes = ignore_unexpected_prefixes or []
         # update default skip_substrs
         self.skip_substrs += self.ROTARY_EMBEDS_UNUSED_WEIGHTS
+        self.vllm_config = vllm_config
 
     def _groupby_prefix(
         self,
@@ -285,8 +287,14 @@ class AutoWeightsLoader:
         if mapper is not None:
             weights = mapper.apply(weights)
         # filter out weights with first-prefix/substr to skip in name
-        weights = ((name, weight) for name, weight in weights
-                   if not self._can_skip(name))
+        if (self.vllm_config is not None
+                and self.vllm_config.ec_transfer_config.is_ec_producer):
+            weights = ((name, weight) for name, weight in weights
+                       if not self._can_skip(name)
+                       and not name.startswith("language_model.model.layers."))
+        else:
+            weights = ((name, weight) for name, weight in weights
+                       if not self._can_skip(name))
 
         autoloaded_weights = set(self._load_module("", self.module, weights))
         return autoloaded_weights

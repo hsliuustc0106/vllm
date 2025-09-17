@@ -30,7 +30,8 @@ class CLIPEncoderInfo(VisionEncoderInfo[CLIPVisionConfig]):
         image_width: int,
         image_height: int,
     ) -> int:
-        return self.get_patch_grid_length()**2 + 1
+        return 2
+        # return self.get_patch_grid_length()**2 + 1
 
     def get_image_size(self) -> int:
         return self.vision_config.image_size

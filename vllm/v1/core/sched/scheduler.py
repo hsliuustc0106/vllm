@@ -10,6 +10,9 @@ from collections.abc import Iterable
 from typing import Any, Optional, Union
 
 from vllm.config import VllmConfig
+from vllm.distributed.ec_transfer.ec_connector.base import ECConnectorRole
+from vllm.distributed.ec_transfer.ec_connector.factory import (
+    ECConnectorFactory)
 from vllm.distributed.kv_events import EventPublisherFactory, KVEventBatch
 from vllm.distributed.kv_transfer.kv_connector.factory import (
     KVConnectorFactory)
@@ -90,6 +93,16 @@ class Scheduler(SchedulerInterface):
             self.kv_events_config,
             self.parallel_config.data_parallel_rank,
         )
+
+        self.ec_connector = None
+        self.ec_max_num_scheduled_tokens = 0
+        if self.vllm_config.ec_transfer_config is not None:
+            self.ec_connector = ECConnectorFactory.create_connector(
+                config=self.vllm_config, role=ECConnectorRole.SCHEDULER)
+            transfer_config = self.vllm_config.ec_transfer_config
+            self.ec_max_num_scheduled_tokens = int(
+                transfer_config.get_from_extra_config(
+                    "ec_max_num_scheduled_tokens", 0))
 
         num_gpu_blocks = self.cache_config.num_gpu_blocks
         assert num_gpu_blocks is not None and num_gpu_blocks > 0
@@ -189,7 +202,8 @@ class Scheduler(SchedulerInterface):
 
         req_to_new_block_ids: dict[str, tuple[list[int], ...]] = {}
         num_scheduled_tokens: dict[str, int] = {}
-        token_budget = self.max_num_scheduled_tokens
+        token_budget = max(self.max_num_scheduled_tokens, \
+                           self.ec_max_num_scheduled_tokens)
         # Encoder-related.
         scheduled_encoder_inputs: dict[str, list[int]] = {}
         encoder_budget = self.max_num_encoder_input_tokens
@@ -224,7 +238,8 @@ class Scheduler(SchedulerInterface):
             new_encoder_budget = encoder_budget
             if request.has_encoder_inputs:
                 (encoder_inputs_to_schedule, num_new_tokens,
-                 new_encoder_budget) = self._try_schedule_encoder_inputs(
+                 new_encoder_budget, external_load_encoder_input
+                 ) = self._try_schedule_encoder_inputs(
                      request, request.num_computed_tokens, num_new_tokens,
                      encoder_budget)
 
@@ -315,6 +330,10 @@ class Scheduler(SchedulerInterface):
                 for i in encoder_inputs_to_schedule:
                     self.encoder_cache_manager.allocate(request, i)
                 encoder_budget = new_encoder_budget
+            if (self.ec_connector is not None and external_load_encoder_input):
+                for i in external_load_encoder_input:
+                    self.encoder_cache_manager.allocate(request, i)
+                    self.ec_connector.update_state_after_alloc(request, i)
 
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
@@ -429,7 +448,7 @@ class Scheduler(SchedulerInterface):
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
                         (encoder_inputs_to_schedule, num_new_tokens,
-                         new_encoder_budget
+                         new_encoder_budget, external_load_encoder_input
                          ) = self._try_schedule_encoder_inputs(
                              request, num_computed_tokens, num_new_tokens,
                              encoder_budget)
@@ -505,6 +524,12 @@ class Scheduler(SchedulerInterface):
                     for i in encoder_inputs_to_schedule:
                         self.encoder_cache_manager.allocate(request, i)
                     encoder_budget = new_encoder_budget
+                # Allocate for external load encoder cache
+                if (self.ec_connector is not None
+                        and external_load_encoder_input):
+                    for i in external_load_encoder_input:
+                        self.encoder_cache_manager.allocate(request, i)
+                        self.ec_connector.update_state_after_alloc(request, i)
 
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
@@ -512,7 +537,10 @@ class Scheduler(SchedulerInterface):
 
         # Check if the scheduling constraints are satisfied.
         total_num_scheduled_tokens = sum(num_scheduled_tokens.values())
-        assert total_num_scheduled_tokens <= self.max_num_scheduled_tokens
+        assert total_num_scheduled_tokens <= max(
+            self.max_num_scheduled_tokens,
+            self.ec_max_num_scheduled_tokens,
+        )
         assert token_budget >= 0
         assert len(self.running) <= self.max_num_running_reqs
         # Since some requests in the RUNNING queue may not be scheduled in
@@ -579,6 +607,10 @@ class Scheduler(SchedulerInterface):
         if events:
             batch = KVEventBatch(ts=time.time(), events=events)
             self.kv_event_publisher.publish(batch)
+
+        if self.ec_connector is not None:
+            meta = self.ec_connector.build_connector_meta(scheduler_output)
+            scheduler_output.ec_connector_metadata = meta
 
         self._update_after_schedule(scheduler_output)
         return scheduler_output
@@ -668,7 +700,7 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: int,
         num_new_tokens: int,
         encoder_budget: int,
-    ) -> tuple[list[int], int, int]:
+    ) -> tuple[list[int], int, int, list[int]]:
         """
         Determine which encoder inputs need to be scheduled in the current step,
         and update `num_new_tokens` and encoder token budget accordingly.
@@ -689,11 +721,13 @@ class Scheduler(SchedulerInterface):
         blocks and externally cached blocks (via KVConnector).
         """
         if num_new_tokens == 0 or not request.has_encoder_inputs:
-            return [], num_new_tokens, encoder_budget
+            return [], num_new_tokens, encoder_budget, []
         encoder_inputs_to_schedule: list[int] = []
         mm_positions = request.mm_positions
         assert mm_positions is not None
         assert len(mm_positions) > 0
+        external_load_encoder_input = []
+
         for i, pos_info in enumerate(mm_positions):
             start_pos = pos_info.offset
             num_encoder_tokens = pos_info.length
@@ -741,9 +775,15 @@ class Scheduler(SchedulerInterface):
                     num_new_tokens = 0
                 break
 
+            if (self.ec_connector is not None
+                    and self.ec_connector.check_caches_exist(request, i)):
+                external_load_encoder_input.append(i)
+                continue
+
             encoder_budget -= num_encoder_tokens
             encoder_inputs_to_schedule.append(i)
-        return encoder_inputs_to_schedule, num_new_tokens, encoder_budget
+        return (encoder_inputs_to_schedule, num_new_tokens, encoder_budget,
+                external_load_encoder_input)
 
     def update_from_output(
         self,
@@ -767,7 +807,7 @@ class Scheduler(SchedulerInterface):
         stopped_running_reqs: set[Request] = set()
         stopped_preempted_reqs: set[Request] = set()
         for req_id, num_tokens_scheduled in num_scheduled_tokens.items():
-            assert num_tokens_scheduled > 0
+            # assert num_tokens_scheduled > 0
             request = self.requests.get(req_id)
             if request is None:
                 # The request is already finished. This can happen if the

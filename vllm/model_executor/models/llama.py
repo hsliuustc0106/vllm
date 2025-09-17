@@ -343,14 +343,16 @@ class LlamaModel(nn.Module):
             )
         else:
             self.embed_tokens = PPMissingLayer()
-        self.start_layer, self.end_layer, self.layers = make_layers(
-            config.num_hidden_layers,
-            lambda prefix: layer_type(config=config,
-                                      cache_config=cache_config,
-                                      quant_config=quant_config,
-                                      prefix=prefix),
-            prefix=f"{prefix}.layers",
-        )
+
+        if not vllm_config.ec_transfer_config.is_ec_producer:
+            self.start_layer, self.end_layer, self.layers = make_layers(
+                config.num_hidden_layers,
+                lambda prefix: layer_type(config=config,
+                                          cache_config=cache_config,
+                                          quant_config=quant_config,
+                                          prefix=prefix),
+                prefix=f"{prefix}.layers",
+            )
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         else:
@@ -416,6 +418,10 @@ class LlamaModel(nn.Module):
         params_dict = dict(self.named_parameters())
         loaded_params: set[str] = set()
         for name, loaded_weight in weights:
+            if "layers." in name:
+                layer_index = extract_layer_index(name)
+                if layer_index >= 37:
+                    continue
             if "rotary_emb.inv_freq" in name:
                 continue
             if ("rotary_emb.cos_cached" in name

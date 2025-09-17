@@ -10,6 +10,8 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
+    from vllm.distributed.ec_transfer.ec_connector.base import (
+        ECConnectorMetadata)
     from vllm.distributed.kv_transfer.kv_connector.v1.base import (
         KVConnectorMetadata)
     from vllm.lora.request import LoRARequest
@@ -155,3 +157,6 @@ class SchedulerOutput:
 
     # KV Cache Connector metadata.
     kv_connector_metadata: Optional[KVConnectorMetadata] = None
+
+    # Encoder Cache Connector metadata
+    ec_connector_metadata: Optional[ECConnectorMetadata] = None

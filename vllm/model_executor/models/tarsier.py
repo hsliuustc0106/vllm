@@ -416,6 +416,7 @@ class TarsierForConditionalGeneration(nn.Module, SupportsMultiModal,
             multimodal_projector_bias=projector_bias,
             quant_config=quant_config,
             prefix=maybe_prefix(prefix, "multi_modal_projector"))
+        self.vllm_config = vllm_config
         self.language_model = init_vllm_registered_model(
             vllm_config=vllm_config,
             hf_config=config.
@@ -644,5 +645,5 @@ class TarsierForConditionalGeneration(nn.Module, SupportsMultiModal,
 
     def load_weights(self, weights: Iterable[tuple[str,
                                                    torch.Tensor]]) -> set[str]:
-        loader = AutoWeightsLoader(self)
+        loader = AutoWeightsLoader(self, vllm_config=self.vllm_config)
         return loader.load_weights(weights)
