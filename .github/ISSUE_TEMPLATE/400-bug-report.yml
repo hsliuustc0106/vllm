@@ -32,7 +32,8 @@ body:
     value: |
       <details>
       <summary>The output of <code>python collect_env.py</code></summary>
-
+      vllm commit link: <YOUR_COMMIT_LINK_HERE>
+      vllm-ascend commit link (optional): <YOUR_ASCEND_COMMIT_LINK_HERE>
       ```text
       Your output of `python collect_env.py` here
       ```
