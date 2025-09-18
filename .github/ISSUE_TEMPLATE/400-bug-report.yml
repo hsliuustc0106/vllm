@@ -35,7 +35,11 @@ body:
       vllm commit link: <YOUR_COMMIT_LINK_HERE>
       vllm-ascend commit link (optional): <YOUR_ASCEND_COMMIT_LINK_HERE>
       ```text
-      Your output of `python collect_env.py` here
+      Your output of `vllm python collect_env.py` here
+      ```
+
+      ```text
+      Your output of `vllm-ascend python collect_env.py` here
       ```
 
       </details>
