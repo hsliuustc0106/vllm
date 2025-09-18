@@ -31,12 +31,15 @@ body:
       It is suggested to download and execute the latest script, as vllm might frequently update the diagnosis information needed for accurately and quickly responding to issues.
     value: |
       <details>
-      <summary>The output of <code>python collect_env.py</code></summary>
+      <summary>The output of <code>vllm python collect_env.py</code></summary>
       vllm commit link: <YOUR_COMMIT_LINK_HERE>
-      vllm-ascend commit link (optional): <YOUR_ASCEND_COMMIT_LINK_HERE>
+
       ```text
       Your output of `vllm python collect_env.py` here
       ```
+
+      <summary>The output of <code>vllm-ascend python collect_env.py</code></summary>
+      vllm-ascend commit link: <YOUR_ASCEND_COMMIT_LINK_HERE>
 
       ```text
       Your output of `vllm-ascend python collect_env.py` here
