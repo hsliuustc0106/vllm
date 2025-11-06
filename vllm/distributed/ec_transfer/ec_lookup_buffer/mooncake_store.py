@@ -14,7 +14,7 @@ import os
 import threading
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Any
 
 import numpy as np
 import regex as re
@@ -60,7 +60,7 @@ class MooncakeStoreConfig:
     fast_transfer_buffer_size: int
 
     @staticmethod
-    def from_config(config) -> "MooncakeStoreConfig":
+    def from_config(config: dict[str, Any]) -> "MooncakeStoreConfig":
         """Load the mooncake store config"""
         return MooncakeStoreConfig(
             local_hostname=config.get("local_hostname", "localhost"),
@@ -340,8 +340,6 @@ class ECMooncakeStore:
     async def _batch_put_async(self, keys: list[str],
                                tensors: list[torch.Tensor]) -> None:
         device = get_world_group().local_rank
-        if hasattr(torch, "npu") and torch.npu.is_available():
-            torch.npu.set_device(device)
         async with self.put_queue_cv:
             self.put_queue.update(keys)
 
