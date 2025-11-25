@@ -285,6 +285,28 @@ class BaseMultiModalProcessorCache(
         """
         return [self.is_cached_item(mm_hash) for mm_hash in mm_hashes]
 
+    @abstractmethod
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        """
+        Touch a multi-modal item in the underlying cache.
+        If underlying cache is not LRU, it will not have effect
+
+        Args:
+          mm_hash: The hash of the item to touch.
+        """
+        raise NotImplementedError
+
+    def update_cache_eviction_order(self, mm_hashes: list[str]) -> None:
+        """
+        Touch a sequence of multi-modal item in the underlying cache.
+        If underlying cache is not LRU, it will not have effect
+
+        Args:
+            mm_hashes: The hash of each item to touch.
+        """
+        for mm_hash in mm_hashes:
+            self.update_cache_item_eviction_order(mm_hash)
+
 
 class MultiModalProcessorOnlyCache(BaseMultiModalProcessorCache):
     """
@@ -329,6 +351,10 @@ class MultiModalProcessorOnlyCache(BaseMultiModalProcessorCache):
     @override
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    @override
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        self._cache.touch(mm_hash)
 
 
 class MultiModalProcessorSenderCache(BaseMultiModalProcessorCache):
@@ -380,6 +406,10 @@ class MultiModalProcessorSenderCache(BaseMultiModalProcessorCache):
     def clear_cache(self) -> None:
         self._cache.clear()
 
+    @override
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        self._cache.touch(mm_hash)
+
 
 class ShmObjectStoreSenderCache(BaseMultiModalProcessorCache):
     """
@@ -418,6 +448,10 @@ class ShmObjectStoreSenderCache(BaseMultiModalProcessorCache):
     @override
     def is_cached_item(self, mm_hash: str) -> bool:
         return self._shm_cache.is_cached(mm_hash)
+
+    @override
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        return None
 
     @override
     def get_and_update_item(
@@ -550,11 +584,41 @@ class BaseMultiModalReceiverCache(
         self,
         mm_features: list["MultiModalFeatureSpec"],
     ) -> list["MultiModalFeatureSpec"]:
-        """Update multimodal features with cached encoder outputs."""
+        """
+        Update multimodal features with cached encoder outputs.
+        Touch all identifier at first before update to avoid
+        item in updated list evict during update.
+        """
+        updated_mm_identifiers = [
+            feature.identifier for feature in mm_features
+        ]
+        self.update_cache_eviction_order(updated_mm_identifiers)
         for feature in mm_features:
             feature.data = self.get_and_update_item(feature.data,
                                                     feature.identifier)
         return mm_features
+
+    @abstractmethod
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        """
+        Touch a multi-modal item in the underlying cache.
+        If underlying cache is not LRU, it will not have effect
+
+        Args:
+            mm_hash: The hash of the item to touch.
+        """
+        raise NotImplementedError
+
+    def update_cache_eviction_order(self, mm_hashes: list[str]) -> None:
+        """
+        Touch a sequence of multi-modal item in the underlying cache.
+        If underlying cache is not LRU, it will not have effect
+
+        Args:
+            mm_hashes: The hash of each item to touch.
+        """
+        for mm_hash in mm_hashes:
+            self.update_cache_item_eviction_order(mm_hash)
 
 
 class MultiModalReceiverCache(BaseMultiModalReceiverCache):
@@ -595,6 +659,10 @@ class MultiModalReceiverCache(BaseMultiModalReceiverCache):
     @override
     def clear_cache(self) -> None:
         self._cache.clear()
+
+    @override
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        self._cache.touch(mm_hash)
 
 
 class ShmObjectStoreReceiverCache(BaseMultiModalReceiverCache):
@@ -648,6 +716,10 @@ class ShmObjectStoreReceiverCache(BaseMultiModalReceiverCache):
     @override
     def clear_cache(self) -> None:
         self._shm_cache.clear()
+
+    @override
+    def update_cache_item_eviction_order(self, mm_hash: str) -> None:
+        return None
 
 
 def engine_receiver_cache_from_config(
