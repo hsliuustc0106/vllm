@@ -1696,6 +1696,13 @@ class BaseMultiModalProcessor(ABC, Generic[_I]):
             for modality, hashes in mm_hashes.items()
         }
 
+        # Need to touch all mm hashes before update to avoid hash in updated
+        # list evict during update
+        updated_mm_hashes = [
+            item_hash for hashes in mm_hashes.values() for item_hash in hashes
+        ]
+        cache.update_cache_eviction_order(updated_mm_hashes)
+
         mm_missing_next_idx = defaultdict[str, int](lambda: 0)
 
         merged_kwargs = defaultdict[str,
