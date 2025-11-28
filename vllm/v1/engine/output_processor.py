@@ -98,6 +98,7 @@ class RequestState:
         top_p: Optional[float] = None,
         n: Optional[int] = None,
         temperature: Optional[float] = None,
+        mm_hashes=None,
     ):
         self.request_id = request_id
         self.parent_req = parent_req
@@ -118,6 +119,7 @@ class RequestState:
         self.is_prefilling = True
         self.queue = queue
         self.num_cached_tokens = 0
+        self.mm_hashes = mm_hashes
 
         self.stats = RequestStateStats(
             arrival_time=arrival_time) if log_stats else None
@@ -132,6 +134,7 @@ class RequestState:
         request_index: int,
         queue: Optional[RequestOutputCollector],
         log_stats: bool,
+        mm_hashes: list[str],
     ) -> "RequestState":
 
         if sampling_params := request.sampling_params:
@@ -179,6 +182,7 @@ class RequestState:
             arrival_time=request.arrival_time,
             queue=queue,
             log_stats=log_stats,
+            mm_hashes=mm_hashes,
         )
 
     def make_request_output(
@@ -257,6 +261,7 @@ class RequestState:
             finished=finished,
             kv_transfer_params=kv_transfer_params,
             num_cached_tokens=self.num_cached_tokens,
+            mm_hashes=self.mm_hashes,
         )
 
     def _new_completion_output(
@@ -365,13 +370,15 @@ class OutputProcessor:
         if request_id in self.request_states:
             raise ValueError(f"Request id {request_id} already running.")
 
+        mm_hashes = [f.identifier for f in request.mm_features]
         req_state = RequestState.from_new_request(tokenizer=self.tokenizer,
                                                   request=request,
                                                   prompt=prompt,
                                                   parent_req=parent_req,
                                                   request_index=request_index,
                                                   queue=queue,
-                                                  log_stats=self.log_stats)
+                                                  log_stats=self.log_stats,
+                                                  mm_hashes=mm_hashes)
         self.request_states[request_id] = req_state
         self.lora_states.add_request(req_state)
         if parent_req:

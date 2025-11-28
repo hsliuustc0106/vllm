@@ -51,6 +51,7 @@ class BlockStored(KVCacheEvent):
     block_size: int
     lora_id: Optional[int]
     medium: Optional[str]
+    mm_hashes: list[list[str]]
 
 
 class BlockRemoved(KVCacheEvent):

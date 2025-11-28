@@ -252,7 +252,10 @@ class BlockPool:
                     lora_id=request.lora_request.id
                     if request.lora_request else None,
                     medium=MEDIUM_GPU,
-                ))
+                    mm_hashes=self._get_block_mm_hash(request,
+                                                      num_cached_blocks,
+                                                      num_full_blocks,
+                                                      block_size)))
 
     def get_new_blocks(self, num_blocks: int) -> list[KVCacheBlock]:
         """Get new blocks from the free block pool.
@@ -414,3 +417,18 @@ class BlockPool:
         events = self.kv_event_queue
         self.kv_event_queue = []
         return events
+
+    def _get_block_mm_hash(self, request: Request, num_cached_blocks: int,
+                           num_full_blocks: int, block_size: int):
+        block_mm_hashes: list[list[str]] = [[]
+                                            for _ in range(num_full_blocks -
+                                                           num_cached_blocks)]
+        start_token_idx = num_cached_blocks * block_size
+        end_token_idx = num_full_blocks + block_size
+        for mm_feature in request.mm_features:
+            if (mm_feature.mm_position.offset >= start_token_idx
+                    and mm_feature.mm_position.offset < end_token_idx):
+                block_mm_hashes[(mm_feature.mm_position.offset -
+                                 start_token_idx) // block_size].append(
+                                     mm_feature.identifier)
+        return block_mm_hashes
