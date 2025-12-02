@@ -15,6 +15,7 @@ import vllm.envs as envs
 from vllm.config import VllmConfig
 from vllm.distributed import (get_tensor_model_parallel_rank,
                               get_tensor_model_parallel_world_size)
+from vllm.distributed.ec_transfer import get_ec_transfer, has_ec_transfer
 from vllm.logger import init_logger
 from vllm.model_executor.model_loader.weight_utils import default_weight_loader
 from vllm.multimodal import NestedTensors
@@ -79,6 +80,25 @@ class WeightsMapper:
             for name, value in values.items()
             if (out_name := self._map_name(name)) is not None
         }
+
+
+# Skip language model in Encoder instance
+def maybe_init_language_model(init_fn):
+    if has_ec_transfer() and get_ec_transfer().is_producer:
+        return None
+    return init_fn()
+
+
+# Skiped language model prefix
+def maybe_skip_language_model_prefix(
+    module: nn.Module,
+    skip_prefixes: list[str],
+    language_attr: str = "language_model",
+):
+    if (has_ec_transfer() and get_ec_transfer().is_producer
+            and hasattr(module, language_attr)
+            and getattr(module, language_attr) is None):
+        skip_prefixes.append(f"{language_attr}.")
 
 
 class AutoWeightsLoader:
@@ -288,8 +308,13 @@ class AutoWeightsLoader:
         if mapper is not None:
             weights = mapper.apply(weights)
         # filter out weights with first-prefix/substr to skip in name
-        weights = ((name, weight) for name, weight in weights
-                   if not self._can_skip(name))
+        if has_ec_transfer() and get_ec_transfer().is_producer:
+            weights = ((name, weight) for name, weight in weights
+                       if not self._can_skip(name)
+                       and not name.startswith("language_model.model.layers"))
+        else:
+            weights = ((name, weight) for name, weight in weights
+                       if not self._can_skip(name))
 
         autoloaded_weights = set(self._load_module("", self.module, weights))
         return autoloaded_weights

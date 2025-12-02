@@ -945,8 +945,10 @@ class TPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin):
                 # Return empty ModelRunnerOutput if there's no work to do.
                 return EMPTY_MODEL_RUNNER_OUTPUT
 
-            return self.kv_connector_no_forward(scheduler_output,
-                                                self.vllm_config)
+            return self.kv_connector_no_forward(
+                scheduler_output,
+                self.vllm_config,
+                encoder_cache=self.encoder_cache)
 
         if self.supports_mm_inputs:
             # Run the multimodal encoder if any.

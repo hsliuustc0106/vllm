@@ -35,7 +35,8 @@ from vllm.v1.engine import (EngineCoreEventType, EngineCoreOutput,
                             EngineCoreOutputs)
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import SchedulerStats
-from vllm.v1.outputs import DraftTokenIds, KVConnectorOutput, ModelRunnerOutput
+from vllm.v1.outputs import (DraftTokenIds, ECConnectorOutput,
+                             KVConnectorOutput, ModelRunnerOutput)
 from vllm.v1.request import Request, RequestStatus
 from vllm.v1.spec_decode.metrics import SpecDecodingStats
 from vllm.v1.structured_output import StructuredOutputManager
@@ -151,6 +152,8 @@ class Scheduler(SchedulerInterface):
             scheduler_config=vllm_config.scheduler_config,
             mm_registry=mm_registry,
         )
+        # EC Connector: requests in process of async EC loading or recving
+        self.finished_recving_ec_req_ids: set[str] = set()
 
         # NOTE(woosuk): Here, "encoder" includes the vision encoder (and
         # projector if needed) for MM models as well as encoder-decoder
@@ -212,6 +215,10 @@ class Scheduler(SchedulerInterface):
         # For logging.
         scheduled_timestamp = time.monotonic()
 
+        # Use a temporary RequestQueue to collect requests that need to be
+        # skipped and put back at the head of the waiting queue later
+        skipped_waiting_requests = create_request_queue(self.policy)
+
         # First, schedule the RUNNING requests.
         req_index = 0
         while req_index < len(self.running) and token_budget > 0:
@@ -237,18 +244,16 @@ class Scheduler(SchedulerInterface):
             external_load_encoder_input: list[int] = []
             new_encoder_compute_budget = encoder_compute_budget
             if request.has_encoder_inputs:
-                (
-                    encoder_inputs_to_schedule,
-                    num_new_tokens,
-                    new_encoder_compute_budget,
-                    external_load_encoder_input,
-                ) = self._try_schedule_encoder_inputs(
-                    request,
-                    request.num_computed_tokens,
-                    num_new_tokens,
-                    encoder_compute_budget,
-                )
-
+                (encoder_inputs_to_schedule, num_new_tokens,
+                 new_encoder_compute_budget, external_load_encoder_input,
+                 can_allocate,
+                 async_load_ec) = self._try_schedule_encoder_inputs(
+                     request,
+                     request.num_computed_tokens,
+                     num_new_tokens,
+                     encoder_compute_budget,
+                 )
+            request.encoder_inputs_to_schedule = encoder_inputs_to_schedule
             if num_new_tokens == 0:
                 # The request cannot be scheduled because one of the following
                 # reasons:
@@ -264,6 +269,19 @@ class Scheduler(SchedulerInterface):
                 # allow the lower-priority requests to be scheduled.
                 req_index += 1
                 continue
+
+            if external_load_encoder_input:
+                for i in external_load_encoder_input:
+                    self.encoder_cache_manager.allocate(
+                        request, i, not async_load_ec)
+                    if self.ec_connector is not None:
+                        self.ec_connector.update_state_after_alloc(request, i)
+                if async_load_ec:
+                    self.running.remove(request)
+                    skipped_waiting_requests.prepend_request(request)
+                    request.status = RequestStatus.WAITING_FOR_REMOTE_ECS
+                    req_index += 1
+                    continue
 
             while True:
                 new_blocks = self.kv_cache_manager.allocate_slots(
@@ -330,13 +348,8 @@ class Scheduler(SchedulerInterface):
                     encoder_inputs_to_schedule)
                 # Allocate the encoder cache.
                 for i in encoder_inputs_to_schedule:
-                    self.encoder_cache_manager.allocate(request, i)
+                    self.encoder_cache_manager.allocate(request, i, True)
                 encoder_compute_budget = new_encoder_compute_budget
-            if external_load_encoder_input:
-                for i in external_load_encoder_input:
-                    self.encoder_cache_manager.allocate(request, i)
-                    if self.ec_connector is not None:
-                        self.ec_connector.update_state_after_alloc(request, i)
 
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
@@ -345,10 +358,6 @@ class Scheduler(SchedulerInterface):
                 req.lora_request.lora_int_id for req in scheduled_running_reqs
                 if req.lora_request and req.lora_request.lora_int_id > 0)
             assert len(scheduled_loras) <= self.lora_config.max_loras
-
-        # Use a temporary RequestQueue to collect requests that need to be
-        # skipped and put back at the head of the waiting queue later
-        skipped_waiting_requests = create_request_queue(self.policy)
 
         # Next, schedule the WAITING requests.
         if not preempted_reqs:
@@ -370,6 +379,18 @@ class Scheduler(SchedulerInterface):
                         self.waiting.pop_request()
                         skipped_waiting_requests.prepend_request(request)
                         continue
+
+                if request.status == RequestStatus.WAITING_FOR_REMOTE_ECS:
+                    is_ec_ready = self._update_waiting_for_remote_ec(request)
+                    if is_ec_ready:
+                        request.status = RequestStatus.WAITING
+                    else:
+                        logger.debug(
+                            "%s is still in WAITING_FOR_REMOTE_ECS state.",
+                            request.request_id)
+                    self.waiting.pop_request()
+                    skipped_waiting_requests.prepend_request(request)
+                    continue
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
@@ -459,21 +480,19 @@ class Scheduler(SchedulerInterface):
 
                     # Schedule encoder inputs.
                     if request.has_encoder_inputs:
-                        (
-                            encoder_inputs_to_schedule,
-                            num_new_tokens,
-                            new_encoder_compute_budget,
-                            external_load_encoder_input,
-                        ) = self._try_schedule_encoder_inputs(
-                            request,
-                            num_computed_tokens,
-                            num_new_tokens,
-                            encoder_compute_budget,
-                        )
-                        if num_new_tokens == 0:
-                            # The request cannot be scheduled.
+                        (encoder_inputs_to_schedule, num_new_tokens,
+                         new_encoder_compute_budget,
+                         external_load_encoder_input, can_allocate,
+                         async_load_ec) = self._try_schedule_encoder_inputs(
+                             request,
+                             num_computed_tokens,
+                             num_new_tokens,
+                             encoder_compute_budget,
+                         )
+                        if num_new_tokens == 0 or not can_allocate:
                             break
 
+                request.encoder_inputs_to_schedule = encoder_inputs_to_schedule
                 # Handles an edge case when P/D Disaggregation
                 # is used with Spec Decoding where an
                 # extra block gets allocated which
@@ -493,6 +512,19 @@ class Scheduler(SchedulerInterface):
                         self.scheduler_config.max_num_encoder_input_tokens
                 else:
                     num_encoder_tokens = 0
+
+                if external_load_encoder_input:
+                    for i in external_load_encoder_input:
+                        self.encoder_cache_manager.allocate(
+                            request, i, not async_load_ec)
+                        if self.ec_connector is not None:
+                            self.ec_connector.update_state_after_alloc(
+                                request, i)
+                    if async_load_ec:
+                        request = self.waiting.pop_request()
+                        skipped_waiting_requests.prepend_request(request)
+                        request.status = RequestStatus.WAITING_FOR_REMOTE_ECS
+                        continue
 
                 new_blocks = self.kv_cache_manager.allocate_slots(
                     request,
@@ -559,15 +591,9 @@ class Scheduler(SchedulerInterface):
                         encoder_inputs_to_schedule)
                     # Allocate the encoder cache.
                     for i in encoder_inputs_to_schedule:
-                        self.encoder_cache_manager.allocate(request, i)
+                        self.encoder_cache_manager.allocate(request, i, True)
                     encoder_compute_budget = new_encoder_compute_budget
-                # Allocate for external load encoder cache
-                if external_load_encoder_input:
-                    for i in external_load_encoder_input:
-                        self.encoder_cache_manager.allocate(request, i)
-                        if self.ec_connector is not None:
-                            self.ec_connector.update_state_after_alloc(
-                                request, i)
+
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
@@ -749,7 +775,7 @@ class Scheduler(SchedulerInterface):
         num_computed_tokens: int,
         num_new_tokens: int,
         encoder_compute_budget: int,
-    ) -> tuple[list[int], int, int, list[int]]:
+    ) -> tuple[list[int], int, int, list[int], bool, bool]:
         """
         Determine which encoder inputs need to be scheduled in the current step,
         and update `num_new_tokens` and encoder token budget accordingly.
@@ -770,8 +796,11 @@ class Scheduler(SchedulerInterface):
         Note that num_computed_tokens includes both locally cached
         blocks and externally cached blocks (via KVConnector).
         """
+        can_allocate = True
+        async_load_ec = False
         if num_new_tokens == 0 or not request.has_encoder_inputs:
-            return [], num_new_tokens, encoder_compute_budget, []
+            return [], num_new_tokens, encoder_compute_budget, [], \
+                   can_allocate, async_load_ec
         encoder_inputs_to_schedule: list[int] = []
         mm_features = request.mm_features
         assert mm_features is not None
@@ -840,6 +869,7 @@ class Scheduler(SchedulerInterface):
             if not self.encoder_cache_manager.can_allocate(
                     request, i, encoder_compute_budget,
                     num_tokens_to_schedule):
+                can_allocate = False
                 # The encoder cache is full or the encoder budget is exhausted.
                 # NOTE(woosuk): We assume that the encoder input tokens should
                 # be processed altogether, as the encoder usually uses
@@ -855,25 +885,23 @@ class Scheduler(SchedulerInterface):
                     # the request in this step.
                     num_new_tokens = 0
                 break
-
-            if self.ec_connector is not None and self.ec_connector.has_caches(
-                    request, i):
-                mm_hashes_to_schedule.add(request.mm_features[i].identifier)
-                external_load_encoder_input.append(i)
-                num_tokens_to_schedule += num_encoder_tokens
-                continue
+            if self.ec_connector is not None:
+                exist, async_load_ec = self.ec_connector.has_caches(request, i)
+                if exist:
+                    mm_hashes_to_schedule.add(
+                        request.mm_features[i].identifier)
+                    external_load_encoder_input.append(i)
+                    num_tokens_to_schedule += num_encoder_tokens
+                    continue
 
             num_tokens_to_schedule += num_encoder_tokens
             encoder_compute_budget -= num_encoder_tokens
             mm_hashes_to_schedule.add(request.mm_features[i].identifier)
             encoder_inputs_to_schedule.append(i)
 
-        return (
-            encoder_inputs_to_schedule,
-            num_new_tokens,
-            encoder_compute_budget,
-            external_load_encoder_input,
-        )
+        return (encoder_inputs_to_schedule, num_new_tokens,
+                encoder_compute_budget, external_load_encoder_input,
+                can_allocate, async_load_ec)
 
     def get_grammar_bitmask(
         self,
@@ -1037,6 +1065,10 @@ class Scheduler(SchedulerInterface):
             self._update_from_kv_xfer_finished(
                 model_runner_output.kv_connector_output)
 
+        if model_runner_output.ec_connector_output:
+            self._update_from_ec_xfer_finished(
+                model_runner_output.ec_connector_output)
+
         # Create EngineCoreOutputs for all clients that have requests with
         # outputs in this step.
         engine_core_outputs = {
@@ -1142,6 +1174,9 @@ class Scheduler(SchedulerInterface):
         return len(self.running), len(self.waiting)
 
     def add_request(self, request: Request) -> None:
+        if self.ec_connector is not None:
+            self.ec_connector.update_mm_hash_key(request)
+
         self.waiting.add_request(request)
         self.requests[request.request_id] = request
         if self.log_stats:
@@ -1195,7 +1230,8 @@ class Scheduler(SchedulerInterface):
         assert request.is_finished()
 
         delay_free_blocks, kv_xfer_params = self._connector_finished(request)
-        self.encoder_cache_manager.free(request)
+        delay_free_ec, _ = self._ec_connector_finished(request)
+
         request_id = request.request_id
         self.finished_req_ids.add(request_id)
         if self.finished_req_ids_dict is not None:
@@ -1203,13 +1239,19 @@ class Scheduler(SchedulerInterface):
 
         if not delay_free_blocks:
             self._free_blocks(request)
+        if not delay_free_ec:
+            self.encoder_cache_manager.free(request)
+            if not delay_free_blocks:
+                del self.requests[request.request_id]
+
+        if self.ec_connector is not None:
+            self.ec_connector.clean_caches(request)
 
         return kv_xfer_params
 
     def _free_blocks(self, request: Request):
         assert request.is_finished()
         self.kv_cache_manager.free(request)
-        del self.requests[request.request_id]
 
     def get_num_unfinished_requests(self) -> int:
         return len(self.waiting) + len(self.running)
@@ -1341,3 +1383,59 @@ class Scheduler(SchedulerInterface):
                     "but the request is already freed.", req_id)
             else:
                 self._free_blocks(self.requests[req_id])
+                del self.requests[req_id]
+
+    ########################################################################
+    # EC Connector Related Methods
+    ########################################################################
+
+    def _ec_connector_finished(
+            self, request: Request) -> tuple[bool, Optional[dict[str, Any]]]:
+        """
+        Invoke the EC connector request_finished() method if applicable.
+
+        Returns optional kv transfer parameters to be included with the
+        request outputs.
+        """
+        if self.ec_connector is None:
+            return False, None
+
+        return self.ec_connector.request_finished(request)
+
+    def _update_waiting_for_remote_ec(self, request: Request) -> bool:
+        assert self.ec_connector is not None
+        if request.request_id not in self.finished_recving_ec_req_ids:
+            return False
+        self.encoder_cache_manager.cache(request)
+        # Return that we are ready.
+        self.finished_recving_ec_req_ids.remove(request.request_id)
+        return True
+
+    def _update_from_ec_xfer_finished(self,
+                                      ec_connector_output: ECConnectorOutput):
+        """
+        Ec Connector: update the scheduler state based on the output.
+
+        The Worker side connectors add finished_recving and
+        finished_sending reqs to the output.
+        * if finished_sending: free the blocks
+        # if finished_recving: add to state so we can
+            schedule the request during the next step.
+        """
+
+        if self.ec_connector is not None:
+            self.ec_connector.update_connector_output(ec_connector_output)
+
+        # KV Connector:: update recv and send status from last step.
+        for req_id in (ec_connector_output.finished_recving or ()):
+            logger.debug("Finished recving EC transfer for request %s", req_id)
+            self.finished_recving_ec_req_ids.add(req_id)
+        for req_id in (ec_connector_output.finished_sending or ()):
+            logger.debug("Finished sending EC transfer for request %s", req_id)
+            if req_id not in self.requests:
+                logger.warning(
+                    "Got finished sending EC transfer for request %s,"
+                    "but the request is already freed.", req_id)
+            else:
+                self.encoder_cache_manager.free(self.requests[req_id])
+                del self.requests[req_id]

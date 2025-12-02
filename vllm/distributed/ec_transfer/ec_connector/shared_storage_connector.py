@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import safetensors
 
@@ -83,9 +83,13 @@ class ECSharedStorageConnector(ECConnectorBase):
             ))
             return
         # Load the EC for each mm data
+        mm_data_set = set()
         for mm_data in metadata.mm_datas:
             if mm_data.mm_hash in encoder_cache:
                 continue
+            if mm_data.mm_hash in mm_data_set:
+                continue
+            mm_data_set.add(mm_data.mm_hash)
             filename = self._generate_filename_debug(mm_data.mm_hash)
             ec_cache = safetensors.torch.load_file(filename)["ec_cache"].to(
                 self._vllm_config.device_config.device)
@@ -93,7 +97,7 @@ class ECSharedStorageConnector(ECConnectorBase):
             logger.debug("Success load encoder cache for hash %s",
                          mm_data.mm_hash)
 
-    def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
+    def save_caches(self, encoder_cache, mm_hashes, **kwargs) -> None:
         """
         Save the encoder cache to the connector.
 
@@ -110,17 +114,18 @@ class ECSharedStorageConnector(ECConnectorBase):
         # Return if it is PD Instance
         if not self.is_producer:
             return
-        filename = self._generate_filename_debug(mm_hash)
-        ec_cache = encoder_cache[mm_hash]
-        tensors = {"ec_cache": ec_cache.detach().cpu()}
-        safetensors.torch.save_file(tensors, filename)
-        logger.debug("Save cache successful for mm_hash %s", mm_hash)
+        for mm_hash in mm_hashes:
+            filename = self._generate_filename_debug(mm_hash)
+            ec_cache = encoder_cache[mm_hash]
+            tensors = {"ec_cache": ec_cache.detach().cpu()}
+            safetensors.torch.save_file(tensors, filename)
+            logger.debug("Save cache successful for mm_hash %s", mm_hash)
 
     def has_caches(
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> Union[bool, list[bool]]:
+    ) -> Union[tuple[Any, bool], Any]:
         """
         Check if cache exist externally for each mm_data of request
 
@@ -133,12 +138,12 @@ class ECSharedStorageConnector(ECConnectorBase):
         """
         if index is not None:
             return self._found_match_for_mm_data(
-                request.mm_features[index].identifier)
+                request.mm_features[index].identifier), False
 
         result = []
         for feature in request.mm_features:
             result.append(self._found_match_for_mm_data(feature.identifier))
-        return result
+        return result, False
 
     def update_state_after_alloc(
         self,
@@ -170,6 +175,41 @@ class ECSharedStorageConnector(ECConnectorBase):
             meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
         self._mm_datas_need_loads.clear()
         return meta
+
+    def update_mm_hash_key(self, request: "Request"):
+        """Update the mm_hash key with request id"""
+        if request.mm_features is None:
+            return
+        for feature in request.mm_features:
+            mm_hash = feature.identifier
+            new_mm_hash = f"{request.request_id}_{mm_hash}"
+            feature.identifier = new_mm_hash
+
+    def clean_caches(
+        self,
+        request: "Request",
+    ):
+        if self.is_producer:
+            return
+        mm_data_set = set()
+        for mm_feature in request.mm_features:
+            if mm_feature.identifier in mm_data_set:
+                continue
+            mm_data_set.add(mm_feature.identifier)
+            filename = self._generate_filename_debug(mm_feature.identifier)
+            flodername = self._generate_foldername_debug(
+                mm_feature.identifier, False)
+            try:
+                os.remove(filename)
+            except OSError as e:
+                logger.warning("Failed to remove cache file %s: %s", filename,
+                               e)
+
+            try:
+                os.rmdir(flodername)
+            except OSError as e:
+                logger.warning("Failed to remove cache directory %s: %s",
+                               flodername, e)
 
     # ==============================
     # Helper functions

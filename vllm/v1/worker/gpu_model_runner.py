@@ -220,6 +220,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
             model_config.is_multimodal_raw_input_only_model)
         # This will be overridden in load_model()
         self.is_multimodal_pruning_enabled = False
+        self.req_id_to_mm_hash: dict[str, set[str]] = {}
         self.max_model_len = model_config.max_model_len
         self.dcp_world_size = self.parallel_config.decode_context_parallel_size
         self.max_num_tokens = scheduler_config.max_num_batched_tokens
@@ -1540,6 +1541,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
                 mm_hash = mm_feature.identifier
                 mm_kwargs.append(mm_feature.data)
                 mm_hashes_pos.append((mm_hash, mm_feature.mm_position))
+                self.req_id_to_mm_hash.setdefault(req_id, set()).add(mm_hash)
 
         return mm_kwargs, mm_hashes_pos
 
@@ -1609,7 +1611,9 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
                 is_embed=pos_info.is_embed,
             )
             logger.debug("Finish execute for mm hash %s", mm_hash)
-            self.maybe_save_ec_to_connector(self.encoder_cache, mm_hash)
+        for req_id, mm_hashes in self.req_id_to_mm_hash.items():
+            self.maybe_save_ec_to_connector(self.encoder_cache,
+                                            list(mm_hashes), req_id)
 
         self.maybe_wait_for_ec_save()
 
@@ -2261,14 +2265,16 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
                     ) as ec_connector_output:
                         self._execute_mm_encoder(scheduler_output)
                         return make_empty_encoder_model_runner_output(
-                            scheduler_output)
+                            scheduler_output, ec_connector_output)
 
                 if not scheduler_output.total_num_scheduled_tokens:
-                    if not has_kv_transfer_group():
+                    if not has_kv_transfer_group() and not has_ec_transfer():
                         # Return empty ModelRunnerOutput if no work to do.
                         return EMPTY_MODEL_RUNNER_OUTPUT
                     return self.kv_connector_no_forward(
-                        scheduler_output, self.vllm_config)
+                        scheduler_output,
+                        self.vllm_config,
+                        encoder_cache=self.encoder_cache)
                 if self.cache_config.kv_sharing_fast_prefill:
                     assert not self.input_batch.num_prompt_logprobs, (
                         "--kv-sharing-fast-prefill produces incorrect "
