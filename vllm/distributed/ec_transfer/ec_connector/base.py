@@ -126,6 +126,16 @@ class ECConnectorBase(ABC):
         # TODO: Implement this later for P2P feature
         return
 
+    def clean_caches(self, request: "Request") -> None:
+        """
+        Optional hook. clean caches in ec_consumer side when request is finish.
+
+        Args:
+            request: Request
+
+        """
+        return None
+
     @abstractmethod
     def start_load_caches(self, encoder_cache: dict[str, torch.Tensor],
                           **kwargs) -> None:
@@ -221,6 +231,19 @@ class ECConnectorBase(ABC):
             request (Request): the request object.
         """
         pass
+
+    def update_mm_data_request_mapping(
+        self,
+        request: "Request",
+        encoder_inputs_to_schedule: list[int],
+        external_load_encoder_input: list[int],
+    ) -> None:
+        """
+        Optional hook. 
+        Update the mapping from mm_data to request ids for transfer.
+        This is used to build the connector metadata.
+        """
+        return None
 
     @abstractmethod
     def build_connector_meta(

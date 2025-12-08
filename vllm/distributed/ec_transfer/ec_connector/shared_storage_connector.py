@@ -34,9 +34,15 @@ class ECSharedStorageConnectorMetadata(ECConnectorMetadata):
 
     def __init__(self):
         self.mm_datas = []
+        self.mm_data_to_request_ids: dict[str, set[str]] = {}
 
     def add_mm_data(self, mm_data: MMMeta):
         self.mm_datas.append(mm_data)
+
+    def add_request_id_for_mm_data(self, mm_hash: str, request_id: set[str]):
+        if mm_hash not in self.mm_data_to_request_ids:
+            self.mm_data_to_request_ids[mm_hash] = set()
+        self.mm_data_to_request_ids[mm_hash].update(request_id)
 
 
 class ECSharedStorageConnector(ECConnectorBase):
@@ -47,6 +53,7 @@ class ECSharedStorageConnector(ECConnectorBase):
         super().__init__(vllm_config=vllm_config, role=role)
         # req_id -> index
         self._mm_datas_need_loads: dict[str, int] = {}
+        self._mm_datas_to_request_ids: dict[str, set[str]] = {}
         transfer_config = vllm_config.ec_transfer_config
         if transfer_config is not None:
             self._storage_path = transfer_config.get_from_extra_config(
@@ -56,6 +63,34 @@ class ECSharedStorageConnector(ECConnectorBase):
         else:
             raise ValueError(
                 "ec_transfer_config must be set for ECConnectorBase")
+
+    def _get_transfer_identifier(self, request_id: str, mm_hash: str) -> str:
+        """Get the transfer identifier for embedding.
+
+        Returns:
+            str: the transfer identifier.
+        """
+        return f"{request_id}_{mm_hash}"
+
+    def clean_caches(
+        self,
+        request: "Request",
+    ):
+        if self.is_producer:
+            return
+        for mm_feature in request.mm_features:
+            transfer_identifier = self._get_transfer_identifier(
+                request.request_id, mm_feature.identifier)
+            filename = self._generate_filename_debug(transfer_identifier)
+            flodername = self._generate_foldername_debug(
+                transfer_identifier, False)
+            try:
+                os.remove(filename)
+                os.rmdir(flodername)
+            except OSError as e:
+                logger.warning(
+                    "Failed to remove cache file %s or directory %s: %s",
+                    filename, flodername, e)
 
     def start_load_caches(self, encoder_cache, **kwargs) -> None:
         """
@@ -86,7 +121,13 @@ class ECSharedStorageConnector(ECConnectorBase):
         for mm_data in metadata.mm_datas:
             if mm_data.mm_hash in encoder_cache:
                 continue
-            filename = self._generate_filename_debug(mm_data.mm_hash)
+
+            request_ids = metadata.mm_data_to_request_ids.get(mm_data.mm_hash)
+            assert request_ids is not None and len(request_ids) > 0
+
+            transfer_identifier = self._get_transfer_identifier(
+                next(iter(request_ids)), mm_hash=mm_data.mm_hash)
+            filename = self._generate_filename_debug(transfer_identifier)
             ec_cache = safetensors.torch.load_file(filename)["ec_cache"].to(
                 self._vllm_config.device_config.device)
             encoder_cache[mm_data.mm_hash] = ec_cache
@@ -110,10 +151,15 @@ class ECSharedStorageConnector(ECConnectorBase):
         # Return if it is PD Instance
         if not self.is_producer:
             return
-        filename = self._generate_filename_debug(mm_hash)
         ec_cache = encoder_cache[mm_hash]
         tensors = {"ec_cache": ec_cache.detach().cpu()}
-        safetensors.torch.save_file(tensors, filename)
+        metadata: ECConnectorMetadata = self._get_connector_metadata()
+        assert isinstance(metadata, ECSharedStorageConnectorMetadata)
+        for request_id in metadata.mm_data_to_request_ids.get(mm_hash, []):
+            transfer_identifier = self._get_transfer_identifier(
+                request_id, mm_hash)
+            filename = self._generate_filename_debug(transfer_identifier)
+            safetensors.torch.save_file(tensors, filename)
         logger.debug("Save cache successful for mm_hash %s", mm_hash)
 
     def has_caches(
@@ -133,11 +179,15 @@ class ECSharedStorageConnector(ECConnectorBase):
         """
         if index is not None:
             return self._found_match_for_mm_data(
-                request.mm_features[index].identifier)
+                self._get_transfer_identifier(
+                    request.request_id, request.mm_features[index].identifier))
 
         result = []
         for feature in request.mm_features:
-            result.append(self._found_match_for_mm_data(feature.identifier))
+            result.append(
+                self._found_match_for_mm_data(
+                    self._get_transfer_identifier(request.request_id,
+                                                  feature.identifier)))
         return result
 
     def update_state_after_alloc(
@@ -152,6 +202,26 @@ class ECSharedStorageConnector(ECConnectorBase):
         num_encoder_token = request.get_num_encoder_tokens(index)
         # Insert mm_hash only if this block has not been recorded yet.
         self._mm_datas_need_loads[mm_hash] = num_encoder_token
+
+    def update_mm_data_request_mapping(
+        self,
+        request: "Request",
+        encoder_inputs_to_schedule: list[int],
+        external_load_encoder_input: list[int],
+    ) -> None:
+        """
+        Update the mapping from mm_data to request ids for transfer.
+        This is used to build the connector metadata.
+        """
+        for i in encoder_inputs_to_schedule:
+            self._mm_datas_to_request_ids.setdefault(
+                request.mm_features[i].identifier,
+                set()).add(request.request_id)
+
+        for i in external_load_encoder_input:
+            self._mm_datas_to_request_ids.setdefault(
+                request.mm_features[i].identifier,
+                set()).add(request.request_id)
 
     def build_connector_meta(
         self,
@@ -169,6 +239,9 @@ class ECSharedStorageConnector(ECConnectorBase):
         for mm_hash, num_encoder_token in self._mm_datas_need_loads.items():
             meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
         self._mm_datas_need_loads.clear()
+        for mm_hash, request_ids in self._mm_datas_to_request_ids.items():
+            meta.add_request_id_for_mm_data(mm_hash, request_ids)
+        self._mm_datas_to_request_ids.clear()
         return meta
 
     # ==============================

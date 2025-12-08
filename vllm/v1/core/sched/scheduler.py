@@ -338,6 +338,11 @@ class Scheduler(SchedulerInterface):
                     if self.ec_connector is not None:
                         self.ec_connector.update_state_after_alloc(request, i)
 
+            if self.ec_connector is not None:
+                self.ec_connector.update_mm_data_request_mapping(
+                    request, encoder_inputs_to_schedule,
+                    external_load_encoder_input)
+
         # Record the LoRAs in scheduled_running_reqs
         scheduled_loras: set[int] = set()
         if self.lora_config:
@@ -568,6 +573,11 @@ class Scheduler(SchedulerInterface):
                         if self.ec_connector is not None:
                             self.ec_connector.update_state_after_alloc(
                                 request, i)
+
+                if self.ec_connector is not None:
+                    self.ec_connector.update_mm_data_request_mapping(
+                        request, encoder_inputs_to_schedule,
+                        external_load_encoder_input)
         # Put back any skipped requests at the head of the waiting queue
         if skipped_waiting_requests:
             self.waiting.prepend_requests(skipped_waiting_requests)
@@ -1203,6 +1213,9 @@ class Scheduler(SchedulerInterface):
 
         if not delay_free_blocks:
             self._free_blocks(request)
+
+        if self.ec_connector is not None:
+            self.ec_connector.clean_caches(request)
 
         return kv_xfer_params
 
