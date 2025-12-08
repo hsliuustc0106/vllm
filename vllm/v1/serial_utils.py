@@ -21,11 +21,13 @@ from vllm.logger import init_logger
 # yapf: disable
 from vllm.multimodal.inputs import (BaseMultiModalField,
                                     MultiModalBatchedField,
+                                    MultiModalFeatureSpec,
                                     MultiModalFieldConfig, MultiModalFieldElem,
                                     MultiModalFlatField, MultiModalKwargs,
                                     MultiModalKwargsItem,
                                     MultiModalKwargsItems,
-                                    MultiModalSharedField, NestedTensors, MultiModalFeatureSpec, PlaceholderRange)
+                                    MultiModalSharedField, NestedTensors,
+                                    PlaceholderRange)
 # yapf: enable
 from vllm.v1.engine import UtilityResult
 
@@ -268,19 +270,23 @@ class MsgpackEncoder:
                         for f in dataclasses.fields(field))
         return name, *field_values
 
-    def encode_tokens_and_mm(self, token_ids, mm_features: Optional[list[MultiModalFeatureSpec]]):
+    def encode_tokens_and_mm(
+            self, token_ids,
+            mm_features: Optional[list[MultiModalFeatureSpec]]):
         self.aux_buffers = bufs = [b'']
         obj = {
-            "token_ids": token_ids,
-            "mm_features": [
-                {
-                    "modality": feature.modality,
-                    "identifier": feature.identifier,
-                    "mm_position": dataclasses.asdict(feature.mm_position),
-                    "data": self._encode_mm_item(feature.data) if feature.data else None
-                }
-                for feature in mm_features
-            ] if mm_features else None
+            "token_ids":
+            token_ids,
+            "mm_features": [{
+                "modality":
+                feature.modality,
+                "identifier":
+                feature.identifier,
+                "mm_position":
+                dataclasses.asdict(feature.mm_position),
+                "data":
+                self._encode_mm_item(feature.data) if feature.data else None
+            } for feature in mm_features] if mm_features else None
         }
         bufs[0] = self.encoder.encode(obj)
         # This `bufs` list allows us to collect direct pointers to backing
@@ -288,6 +294,7 @@ class MsgpackEncoder:
         # top-level encoded buffer instead of copying their data into the
         # new buffer.
         return bufs
+
 
 class MsgpackDecoder:
     """Decoder with custom torch tensor and numpy array serialization.
@@ -459,12 +466,9 @@ class MsgpackDecoder:
                 data = (self._decode_mm_item(feature_obj["data"])
                         if feature_obj["data"] is not None else None)
                 mm_features.append(
-                    MultiModalFeatureSpec(
-                        modality=feature_obj["modality"],
-                        identifier=feature_obj["identifier"],
-                        mm_position=mm_position,
-                        data=data
-                    )
-                )
+                    MultiModalFeatureSpec(modality=feature_obj["modality"],
+                                          identifier=feature_obj["identifier"],
+                                          mm_position=mm_position,
+                                          data=data))
 
         return token_ids, mm_features
