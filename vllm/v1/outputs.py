@@ -10,6 +10,8 @@ import torch
 from vllm.v1.core.sched.output import SchedulerOutput
 
 if TYPE_CHECKING:
+    from vllm.distributed.ec_transfer.ec_connector.metrics import (
+        ECConnectorStats)
     from vllm.distributed.kv_transfer.kv_connector.v1.metrics import (
         KVConnectorStats)
 
@@ -100,6 +102,7 @@ class ECConnectorOutput:
     # [mm_hash]
     finished_sending: Optional[set[str]] = None
     finished_recving: Optional[set[str]] = None
+    ec_connector_stats: Optional[ECConnectorStats] = None
 
 
 # ModelRunnerOutput is serialized and sent to the scheduler process.
@@ -200,10 +203,12 @@ def make_empty_encoder_model_runner_output(
     )
 
 
-EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(req_ids=[],
-                                              req_id_to_index={},
-                                              sampled_token_ids=[],
-                                              logprobs=None,
-                                              prompt_logprobs_dict={},
-                                              pooler_output=[],
-                                              num_nans_in_logits=None)
+EMPTY_MODEL_RUNNER_OUTPUT = ModelRunnerOutput(
+    req_ids=[],
+    req_id_to_index={},
+    sampled_token_ids=[],
+    logprobs=None,
+    prompt_logprobs_dict={},
+    pooler_output=[],
+    num_nans_in_logits=None,
+)

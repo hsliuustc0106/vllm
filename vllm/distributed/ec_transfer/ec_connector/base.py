@@ -203,6 +203,16 @@ class ECConnectorBase(ABC):
         """
         return None, None
 
+    @abstractmethod
+    def get_stats(self) -> Any:
+        """
+        Get the statistics of the connector.
+
+        Returns:
+            Statistics object.
+        """
+        pass
+
     # ==============================
     # Scheduler-side methods
     # ==============================

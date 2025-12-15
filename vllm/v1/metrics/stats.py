@@ -44,6 +44,7 @@ class SchedulerStats:
 
     spec_decoding_stats: Optional[SpecDecodingStats] = None
     kv_connector_stats: Optional[dict[str, Any]] = None
+    ec_connector_stats: Optional[dict[str, Any]] = None
 
     num_corrupted_reqs: int = 0
 

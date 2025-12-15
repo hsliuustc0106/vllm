@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import copy
 import os
+from contextlib import contextmanager
 from dataclasses import dataclass
 from importlib import import_module
+from time import perf_counter
 from typing import TYPE_CHECKING, Optional, Union
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import (
     ECConnectorBase, ECConnectorMetadata, ECConnectorRole)
+from vllm.distributed.ec_transfer.ec_connector.metrics import ECConnectorStats
 from vllm.logger import init_logger
 from vllm.v1.core.sched.output import SchedulerOutput
 
@@ -56,6 +60,7 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         # mm_hash -> num_tokens
         self._mm_datas_need_loads: dict[str, int] = {}
         self.store = ECMooncakeStore(vllm_config)
+        self.stats = MooncakeECConnectorStats()
 
     def start_load_caches(self, encoder_cache, **kwargs) -> None:
         """
@@ -79,18 +84,19 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         if not metadata.mm_datas:
             return
 
-        mm_hashes = [
-            mm_data.mm_hash for mm_data in metadata.mm_datas
-            if mm_data.mm_hash not in encoder_cache
-        ]
-        device = self._vllm_config.device_config.device
-        tensors = self.store.batch_get(mm_hashes, device)
+        with self.stats.load_timer():
+            mm_hashes = [
+                mm_data.mm_hash for mm_data in metadata.mm_datas
+                if mm_data.mm_hash not in encoder_cache
+            ]
+            device = self._vllm_config.device_config.device
+            tensors = self.store.batch_get(mm_hashes, device)
 
-        for mm_hash, ec_cache in zip(mm_hashes, tensors):
-            encoder_cache[mm_hash] = ec_cache
-            if ec_cache is None:
-                logger.error("Load failed for %s", mm_hash)
-            logger.debug("Load tensor for %s successfully", mm_hash)
+            for mm_hash, ec_cache in zip(mm_hashes, tensors):
+                encoder_cache[mm_hash] = ec_cache
+                if ec_cache is None:
+                    logger.error("Load failed for %s", mm_hash)
+                logger.debug("Load tensor for %s successfully", mm_hash)
 
     def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
         """
@@ -113,6 +119,9 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         self.store.batch_put([mm_hash], [encoder_cache[mm_hash]])
 
     def wait_for_save(self):
+        if not self.is_producer:
+            return
+
         self.store.wait_for_put()
 
     def has_caches(
@@ -167,3 +176,74 @@ class ECMooncakeStorageConnector(ECConnectorBase):
             meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
         self._mm_datas_need_loads.clear()
         return meta
+
+    def get_stats(self) -> ECConnectorStats:
+        return self.stats.clone_and_reset()
+
+
+@dataclass
+class MooncakeECConnectorStats(ECConnectorStats):
+    """Container for transfer performance metrics"""
+
+    def __post_init__(self):
+        if "load_time_ms" not in self.data:
+            self.data["load_time_ms"] = 0.0
+        if "save_time_ms" not in self.data:
+            self.data["save_time_ms"] = 0.0
+        if "num_loads" not in self.data:
+            self.data["num_loads"] = 0
+        if "num_saves" not in self.data:
+            self.data["num_saves"] = 0
+
+    def reset(self):
+        self.data = {
+            "load_time_ms": 0.0,
+            "save_time_ms": 0.0,
+            "num_loads": 0,
+            "num_saves": 0,
+        }
+
+    @contextmanager
+    def load_timer(self):
+        start = perf_counter()
+        try:
+            yield
+        finally:
+            elapsed_ms = (perf_counter() - start) * 1000.0
+            self.record_load(elapsed_ms)
+
+    def record_load(self, load_time_ms: float):
+        self.data["load_time_ms"] += load_time_ms
+        self.data["num_loads"] += 1
+
+    def record_save(self, save_time_ms: float):
+        self.data["save_time_ms"] += save_time_ms
+        self.data["num_saves"] += 1
+
+    def clone_and_reset(self) -> "MooncakeECConnectorStats":
+        old = copy.copy(self)
+        self.reset()
+        return old
+
+    def is_empty(self) -> bool:
+        return self.data["num_loads"] == 0 and self.data["num_saves"] == 0
+
+    def aggregate(self, other: ECConnectorStats) -> ECConnectorStats:
+        if not other.is_empty():
+            self.data["load_time_ms"] += other.data["load_time_ms"]
+            self.data["save_time_ms"] += other.data["save_time_ms"]
+            self.data["num_loads"] += other.data["num_loads"]
+            self.data["num_saves"] += other.data["num_saves"]
+        return self
+
+    def reduce(self) -> dict[str, Union[int, float]]:
+        return {
+            "avg_load_time_ms":
+            (self.data["load_time_ms"] / max(1, self.data["num_loads"])),
+            "avg_save_time_ms":
+            (self.data["save_time_ms"] / max(1, self.data["num_saves"])),
+            "total_loads":
+            self.data["num_loads"],
+            "total_saves":
+            self.data["num_saves"],
+        }

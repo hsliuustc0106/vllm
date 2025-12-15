@@ -84,5 +84,5 @@ class ECConnectorModelRunnerMixin:
         finally:
             output.finished_sending, output.finished_recving = (
                 ec_connector.get_finished(scheduler_output.finished_req_ids))
-
+            output.ec_connector_stats = ec_connector.get_stats()
             ec_connector.clear_connector_metadata()
