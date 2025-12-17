@@ -1247,6 +1247,9 @@ class Scheduler(SchedulerInterface):
         if self.ec_connector is not None:
             self.ec_connector.clean_caches(request)
 
+        if self.ec_connector is not None:
+            self.ec_connector.clean_caches(request)
+
         return kv_xfer_params
 
     def _free_blocks(self, request: Request):
