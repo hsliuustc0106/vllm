@@ -107,8 +107,8 @@ class ECSharedStorageConnector(ECConnectorBase):
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping
                 multimodal data hashes (`mm_hash`) to encoder cache tensors.
-            mm_hash (str): The hash of the multimodal data whose cache is
-                being saved.
+            mm_hashes (list[str]): The hash of the multimodal data whose cache
+                is being saved.
             kwargs (dict): Additional keyword arguments for the connector.
         """
         # Return if it is PD Instance

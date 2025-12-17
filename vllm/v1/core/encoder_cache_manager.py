@@ -180,6 +180,9 @@ class EncoderCacheManager:
             self.cached[mm_hash] = set()
             self.has_cache[mm_hash] = has_cache
         elif mm_hash in self.has_cache and not self.has_cache[mm_hash]:
+            # Cache space for this mm_hash has already been reserved earlier.
+            # The encoder output is not ready yet, so we only record the request
+            # and return without additional slot accounting.
             self.cached[mm_hash].add(request_id)
             return
 
@@ -243,13 +246,13 @@ class EncoderCacheManager:
             self.free_encoder_input(request, input_id)
 
     def cache(self, request: Request) -> None:
-        """Free all encoder input cache reference held by *request*.
+        """Mark encoder cache entries as ready for the given *request*.
 
-        For each cached input ID, `free_encoder_input` is invoked.
-        The data stays in memory until eviction is triggered by a future
-        attempt allocation called by 'can_allocate'.
-
-        Typically called when a request is finished, cancelled, or aborted.
+        For each cached multimodal input ID associated with the request,
+        this method marks the corresponding encoder cache entry as available
+        by setting its `has_cache[mm_hash]` flag to True. This is typically
+        invoked after asynchronous loading of encoder outputs completes, so
+        that subsequent decoding can reuse the cached encoder outputs.
         """
         input_ids = self.get_cached_input_ids(request).copy()
         for input_id in input_ids:

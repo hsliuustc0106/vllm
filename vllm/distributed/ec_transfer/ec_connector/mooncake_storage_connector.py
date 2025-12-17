@@ -19,6 +19,9 @@ _EC_STORE_MODULES = {
     "mooncake": "vllm.distributed.ec_transfer.ec_lookup_buffer.mooncake_store"
 }
 
+MAX_RETRY_TIMES = 3
+SLEEP_TIMEOUT = 0.005
+
 ec_store_type = os.getenv("EC_STORE_TYPE", "mooncake")
 async_handler = int(os.getenv("EC_STORE_ASYNC", 1))
 module_name = _EC_STORE_MODULES.get(ec_store_type,
@@ -86,14 +89,28 @@ class ECMooncakeStorageConnector(ECConnectorBase):
 
     async def _loader_loop(self) -> None:
         while True:
-            req_id, mm_hashes, encoder_cache = await self._pending_load_reqs.\
-                get()
-            tensors = self.store.batch_get(mm_hashes, self.device)
-            for mm_hash, ec_cache in zip(mm_hashes, tensors):
-                if ec_cache is None:
-                    logger.error("Load failed for %s with error", mm_hash)
-                encoder_cache[mm_hash] = ec_cache
-            await self._finished_load_reqs.put(req_id)
+            load_future_len = self._pending_load_reqs.qsize()
+            for _ in range(load_future_len):
+                req_id, mm_hashes, encoder_cache = await \
+                    self._pending_load_reqs.get()
+                try:
+                    tensors = self.store.batch_get(mm_hashes, self.device)
+                except Exception as e:
+                    logger.error("Batch get failed for %s with error %s",
+                                 mm_hashes, e)
+                    await self._pending_load_reqs.put\
+                        ((req_id, mm_hashes, encoder_cache))
+                    continue
+
+                if any(t is None for t in tensors):
+                    logger.error("Load failed for %s", mm_hashes)
+                    await self._pending_load_reqs.put \
+                        ((req_id, mm_hashes, encoder_cache))
+                    continue
+                for mm_hash, ec_cache in zip(mm_hashes, tensors):
+                    encoder_cache[mm_hash] = ec_cache
+                await self._finished_load_reqs.put(req_id)
+            await asyncio.sleep(SLEEP_TIMEOUT)
 
     def start_load_caches(self, encoder_cache, **kwargs) -> None:
         """
@@ -126,17 +143,32 @@ class ECMooncakeStorageConnector(ECConnectorBase):
             else:
                 tensors = self.store.batch_get(mm_hashes, self.device)
                 for mm_hash, ec_cache in zip(mm_hashes, tensors):
-                    encoder_cache[mm_hash] = ec_cache
                     if ec_cache is None:
                         logger.error("Load failed for %s", mm_hash)
+                        continue
+
+                    encoder_cache[mm_hash] = ec_cache
                     logger.debug("Load tensor for %s successfully", mm_hash)
 
     async def _saver_loop(self):
         while True:
             req_id, mm_hashes, encoder_cache = await self._pending_save_reqs.\
                 get()
-            await self.store.batch_put(mm_hashes,
-                                       [encoder_cache[h] for h in mm_hashes])
+            save_success = False
+            for attempt in range(1, MAX_RETRY_TIMES + 1):
+                try:
+                    await self.store.batch_put(
+                        mm_hashes, [encoder_cache[h] for h in mm_hashes])
+                    save_success = True
+                    break
+                except Exception as e:
+                    logger.error(
+                        "Batch put failed for %s, attempt %d/%d with error %s",
+                        mm_hashes, attempt, MAX_RETRY_TIMES, e)
+                    await asyncio.sleep(SLEEP_TIMEOUT)
+            if not save_success:
+                logger.error("Failed to save caches for %s after %d retries",
+                             mm_hashes, MAX_RETRY_TIMES)
             await self._finished_save_reqs.put(req_id)
 
     def save_caches(self, encoder_cache, mm_hashes, **kwargs) -> None:
@@ -158,11 +190,7 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         assert encoder_cache is not None
         assert mm_hashes is not None
         req_id = kwargs.get("req_id")
-        if req_id is None:
-            raise ValueError("save caches requires a 'req_id' in kwargs")
-
-        if not isinstance(req_id, str):
-            raise TypeError(f"req_id must be a str, but got {type(req_id)}")
+        assert req_id is not None
         if async_handler:
             asyncio.run_coroutine_threadsafe(
                 self._pending_save_reqs.put(
@@ -249,8 +277,8 @@ class ECMooncakeStorageConnector(ECConnectorBase):
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
         meta = ECMooncakeStorageConnectorMetadata()
-        for mm_hash, num_encoder_token in self._mm_datas_need_loads.items():
-            meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
+        for req_id, mm_hashes in self._mm_datas_need_loads.items():
+            meta.add_mm_data(MMMeta.make_meta(req_id, mm_hashes))
         self._mm_datas_need_loads.clear()
         return meta
 

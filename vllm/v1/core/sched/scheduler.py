@@ -388,9 +388,9 @@ class Scheduler(SchedulerInterface):
                         logger.debug(
                             "%s is still in WAITING_FOR_REMOTE_ECS state.",
                             request.request_id)
-                    self.waiting.pop_request()
-                    skipped_waiting_requests.prepend_request(request)
-                    continue
+                        self.waiting.pop_request()
+                        skipped_waiting_requests.prepend_request(request)
+                        continue
 
                 # Skip request if the structured output request is still waiting
                 # for FSM compilation.
@@ -1247,9 +1247,6 @@ class Scheduler(SchedulerInterface):
         if self.ec_connector is not None:
             self.ec_connector.clean_caches(request)
 
-        if self.ec_connector is not None:
-            self.ec_connector.clean_caches(request)
-
         return kv_xfer_params
 
     def _free_blocks(self, request: Request):
@@ -1368,7 +1365,7 @@ class Scheduler(SchedulerInterface):
         finished_sending reqs to the output.
         * if finished_sending: free the blocks
         # if finished_recving: add to state so we can
-            schedule the request during the next step.
+        # schedule the request during the next step.
         """
 
         if self.connector is not None:
@@ -1423,13 +1420,13 @@ class Scheduler(SchedulerInterface):
         finished_sending reqs to the output.
         * if finished_sending: free the blocks
         # if finished_recving: add to state so we can
-            schedule the request during the next step.
+        # schedule the request during the next step.
         """
 
         if self.ec_connector is not None:
             self.ec_connector.update_connector_output(ec_connector_output)
 
-        # KV Connector:: update recv and send status from last step.
+        # EC Connector: update recv and send status from last step.
         for req_id in (ec_connector_output.finished_recving or ()):
             logger.debug("Finished recving EC transfer for request %s", req_id)
             self.finished_recving_ec_req_ids.add(req_id)

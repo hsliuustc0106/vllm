@@ -1533,6 +1533,7 @@ class GPUModelRunner(LoRAModelRunnerMixin, KVConnectorModelRunnerMixin,
         mm_kwargs = list[MultiModalKwargsItem]()
         # list of tuple (mm_hash, position_info)
         mm_hashes_pos = list[tuple[str, PlaceholderRange]]()
+        self.req_id_to_mm_hash.clear()
         for req_id, encoder_input_ids in scheduled_encoder_inputs.items():
             req_state = self.requests[req_id]
 
