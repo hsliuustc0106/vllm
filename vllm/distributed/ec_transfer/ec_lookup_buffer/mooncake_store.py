@@ -17,12 +17,11 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 import numpy as np
-import regex as re
 import torch
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.utils.tensor_memory_pool import (
-    InsufficientMemoryError, TensorMemoryPool)
+    TensorMemoryPool)
 from vllm.logger import init_logger
 
 DEFAULT_GLOBAL_SEGMENT_SIZE = 3355443200  # 3.125 GiB
@@ -175,6 +174,7 @@ class ECMooncakeStore:
 
         # Fast transfer init (Use zero-copy methods of mooncake)
         if self.config.fast_transfer:
+            self.pool_lock = threading.Lock()
             self.tensor_pool = TensorMemoryPool(
                 max_block_size=self.config.fast_transfer_buffer_size)
             self.store.register_buffer(self.tensor_pool.base_address,
@@ -239,7 +239,6 @@ class ECMooncakeStore:
             return [None] * len(keys)
 
         buffer_shapes = []
-        buffer_addrs = []
         buffer_dtypes = []
         sizes = []
         exist_ids = []
@@ -258,11 +257,13 @@ class ECMooncakeStore:
             num_elem = math.prod(buffer_shape)
             buffer_size = num_elem * element_size
 
-            buffer_addr = self._pool_allocate(buffer_size)
-            buffer_addrs.append(buffer_addr)
             buffer_dtypes.append(buffer_dtype)
             sizes.append(buffer_size)
             buffer_shapes.append(buffer_shape)
+        with self.pool_lock:
+            buffer_addrs = [
+                self.tensor_pool.allocate(buffer_size) for buffer_size in sizes
+            ]
 
         # Fill None first and
         # Replace valid keys with corresponding buffers.
@@ -272,6 +273,8 @@ class ECMooncakeStore:
             read_bytes = self.store.batch_get_into(valid_keys, buffer_addrs,
                                                    sizes)
         except Exception as e:
+            with self.pool_lock:
+                self.tensor_pool.batch_free(buffer_addrs)
             logger.error("batch_get_into failed: %s", str(e))
 
         # NOTE: should I delay free buffer
@@ -283,7 +286,8 @@ class ECMooncakeStore:
                 results[id] = self.tensor_pool.load_tensor(
                     addr, dtype, shape, device)
 
-            self.tensor_pool.free(addr)
+        with self.pool_lock:
+            self.tensor_pool.batch_free(buffer_addrs)
 
         return results
 
@@ -367,14 +371,13 @@ class ECMooncakeStore:
         meta_values = []
         buffer_addrs = []
         buffer_sizes = []
+        with self.pool_lock:
+            for key, tensor in zip(keys, tensors):
+                buffer_addr = self.tensor_pool.store_tensor(tensor)
+                buffer_size = tensor.numel() * tensor.element_size()
+                buffer_addrs.append(buffer_addr)
+                buffer_sizes.append(buffer_size)
         for key, tensor in zip(keys, tensors):
-            buffer_addr = self._pool_store_tensor(tensor)
-            self.fifo_pool_queue.append(
-                ECMooncakeTensorPoolMetadata(key, buffer_addr))
-            buffer_size = tensor.numel() * tensor.element_size()
-            buffer_addrs.append(buffer_addr)
-            buffer_sizes.append(buffer_size)
-
             meta = {"shape": list(tensor.shape), "dtype": str(tensor.dtype)}
             meta_str = json.dumps(meta)
             meta_bytes = meta_str.encode("utf-8")
@@ -414,6 +417,10 @@ class ECMooncakeStore:
                 ",".join(keys),
                 str(e),
             )
+        finally:
+            if buffer_addrs:
+                with self.pool_lock:
+                    self.tensor_pool.batch_free(buffer_addrs)
 
     async def _batch_put(self, keys: list[str],
                          tensors: list[torch.Tensor]) -> None:
@@ -454,36 +461,3 @@ class ECMooncakeStore:
                 ",".join(keys),
                 str(e),
             )
-
-    # ==============================
-    # Tensor pool helper functions
-    # ==============================
-
-    def _pool_eviction(self) -> None:
-        evicted_buffer = self.fifo_pool_queue.popleft()
-        self.tensor_pool.free(evicted_buffer.addr)
-        key = re.escape(evicted_buffer.key)
-        meta_key = re.escape(self.metadata_key(evicted_buffer.key))
-        count = self.store.remove_by_regex(f"^(?:{key}|{meta_key})$")
-        if count > 2:
-            logger.error("count of key and meta key exceeds 2")
-
-    def _pool_allocate(self, size: int) -> int:
-        while True:
-            try:
-                return self.tensor_pool.allocate(size)
-            except InsufficientMemoryError:
-                if not self.fifo_pool_queue:
-                    raise
-
-                self._pool_eviction()
-
-    def _pool_store_tensor(self, tensor: torch.Tensor) -> int:
-        while True:
-            try:
-                return self.tensor_pool.store_tensor(tensor)
-            except InsufficientMemoryError:
-                if not self.fifo_pool_queue:
-                    raise
-
-                self._pool_eviction()
