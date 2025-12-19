@@ -8,6 +8,8 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from typing import Generator  # noqa: UP035
 from typing import TYPE_CHECKING, Optional
 
+import torch
+
 from vllm.config import VllmConfig
 from vllm.distributed.kv_transfer import (ensure_kv_transfer_shutdown,
                                           get_kv_transfer_group,
@@ -19,6 +21,8 @@ from vllm.forward_context import get_forward_context, set_forward_context
 from vllm.logger import init_logger
 from vllm.v1.outputs import (EMPTY_MODEL_RUNNER_OUTPUT, KVConnectorOutput,
                              ModelRunnerOutput)
+from vllm.v1.worker.ec_connector_model_runner_mixin import (
+    ECConnectorModelRunnerMixin)
 
 if TYPE_CHECKING:
     from vllm.v1.core.sched.output import SchedulerOutput
@@ -66,21 +70,32 @@ class KVConnectorModelRunnerMixin:
         return None, None
 
     @staticmethod
-    def kv_connector_no_forward(scheduler_output: "SchedulerOutput",
-                                vllm_config: VllmConfig) -> ModelRunnerOutput:
+    def kv_connector_no_forward(
+            scheduler_output: "SchedulerOutput", vllm_config: VllmConfig,
+            encoder_cache: dict[str, torch.Tensor]) -> ModelRunnerOutput:
         # KV send/recv even if no work to do.
         with set_forward_context(
                 None, vllm_config
         ), KVConnectorModelRunnerMixin._get_kv_connector_output(
                 scheduler_output, wait_for_save=False) as kv_connector_output:
             pass
+        with ECConnectorModelRunnerMixin.maybe_get_ec_connector_output(
+                scheduler_output, encoder_cache) as ec_connector_output:
+            pass
+
+        ec_finished_recving = (None if ec_connector_output is None else
+                               ec_connector_output.finished_recving)
+        ec_finished_sending = (None if ec_connector_output is None else
+                               ec_connector_output.finished_sending)
 
         if (not kv_connector_output.finished_sending
-                and not kv_connector_output.finished_recving):
+                and not kv_connector_output.finished_recving
+                and not ec_finished_recving and not ec_finished_sending):
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
         output.kv_connector_output = kv_connector_output
+        output.ec_connector_output = ec_connector_output
         return output
 
     @staticmethod

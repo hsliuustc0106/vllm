@@ -99,6 +99,7 @@ class Request:
         self.mm_features = mm_features or []
         self.num_encoder_inputs = len(self.mm_features)
         self.has_encoder_inputs = self.num_encoder_inputs > 0
+        self.encoder_inputs_to_schedule: Optional[list[int]] = None
 
         # Read-only views
         # Prevent directly appending to these lists since
@@ -207,6 +208,7 @@ class RequestStatus(enum.IntEnum):
     WAITING = enum.auto()
     WAITING_FOR_FSM = enum.auto()
     WAITING_FOR_REMOTE_KVS = enum.auto()
+    WAITING_FOR_REMOTE_ECS = enum.auto()
     RUNNING = enum.auto()
     PREEMPTED = enum.auto()
     # Note: anything after PREEMPTED will be considered

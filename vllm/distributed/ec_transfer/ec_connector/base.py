@@ -159,8 +159,8 @@ class ECConnectorBase(ABC):
         pass
 
     @abstractmethod
-    def save_caches(self, encoder_cache: dict[str, torch.Tensor], mm_hash: str,
-                    **kwargs) -> None:
+    def save_caches(self, encoder_cache: dict[str, torch.Tensor],
+                    mm_hashes: list[str], **kwargs) -> None:
         """
         Save the encoder cache to the connector.
 
@@ -170,7 +170,7 @@ class ECConnectorBase(ABC):
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping 
                 multimodal data hashes (`mm_hash`) to encoder cache tensors.
-            mm_hash (str): 
+            mm_hashes (list[str]):
                 The hash of the multimodal data whose cache is being saved.
             kwargs (dict): Additional keyword arguments for the connector.
         """
@@ -212,7 +212,7 @@ class ECConnectorBase(ABC):
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> Union[bool, list[bool]]:
+    ) -> Union[tuple[Any, bool], Any]:
         """
         Check if encoder cache exists for each mm data of requests
 

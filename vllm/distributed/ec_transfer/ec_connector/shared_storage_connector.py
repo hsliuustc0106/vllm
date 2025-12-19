@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import os
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import safetensors
 
@@ -97,7 +97,7 @@ class ECSharedStorageConnector(ECConnectorBase):
             logger.debug("Success load encoder cache for hash %s",
                          mm_data.mm_hash)
 
-    def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
+    def save_caches(self, encoder_cache, mm_hashes, **kwargs) -> None:
         """
         Save the encoder cache to the connector.
 
@@ -107,24 +107,25 @@ class ECSharedStorageConnector(ECConnectorBase):
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping
                 multimodal data hashes (`mm_hash`) to encoder cache tensors.
-            mm_hash (str): The hash of the multimodal data whose cache is
-                being saved.
+            mm_hashes (list[str]): The hash of the multimodal data whose cache
+                is being saved.
             kwargs (dict): Additional keyword arguments for the connector.
         """
         # Return if it is PD Instance
         if not self.is_producer:
             return
-        filename = self._generate_filename_debug(mm_hash)
-        ec_cache = encoder_cache[mm_hash]
-        tensors = {"ec_cache": ec_cache.detach().cpu()}
-        safetensors.torch.save_file(tensors, filename)
-        logger.debug("Save cache successful for mm_hash %s", mm_hash)
+        for mm_hash in mm_hashes:
+            filename = self._generate_filename_debug(mm_hash)
+            ec_cache = encoder_cache[mm_hash]
+            tensors = {"ec_cache": ec_cache.detach().cpu()}
+            safetensors.torch.save_file(tensors, filename)
+            logger.debug("Save cache successful for mm_hash %s", mm_hash)
 
     def has_caches(
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> Union[bool, list[bool]]:
+    ) -> Union[tuple[Any, bool], Any]:
         """
         Check if cache exist externally for each mm_data of request
 
@@ -137,12 +138,12 @@ class ECSharedStorageConnector(ECConnectorBase):
         """
         if index is not None:
             return self._found_match_for_mm_data(
-                request.mm_features[index].identifier)
+                request.mm_features[index].identifier), False
 
         result = []
         for feature in request.mm_features:
             result.append(self._found_match_for_mm_data(feature.identifier))
-        return result
+        return result, False
 
     def update_state_after_alloc(
         self,

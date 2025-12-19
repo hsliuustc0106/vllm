@@ -67,6 +67,8 @@ class EncoderCacheManager:
         # mm_hash of mm_data => ids of requests that reference the mm_data
         self.cached: dict[str, set[str]] = {}
 
+        self.has_cache: dict[str, bool] = {}
+
         # mm_hash of mm_data => num_encoder_tokens of the mm_data
         self.freeable: OrderedDict[str, int] = OrderedDict()
         self.freed: list[str] = []
@@ -89,6 +91,9 @@ class EncoderCacheManager:
         mm_hash = request.mm_features[input_id].identifier
         # Not cached at all
         if mm_hash not in self.cached:
+            return False
+
+        if mm_hash not in self.has_cache or not self.has_cache[mm_hash]:
             return False
 
         # Cached but currently not referenced by any request
@@ -152,11 +157,13 @@ class EncoderCacheManager:
         while num_tokens > self.num_free_slots:
             mm_hash, num_free_token = self.freeable.popitem(last=False)
             del self.cached[mm_hash]
+            del self.has_cache[mm_hash]
             self.freed.append(mm_hash)
             self.num_free_slots += num_free_token
         return True
 
-    def allocate(self, request: Request, input_id: int) -> None:
+    def allocate(self, request: Request, input_id: int,
+                 has_cache: bool) -> None:
         """Allocate cache space for a multimodal input's encoder output.
 
         This reserves cache space for storing the encoder output of the
@@ -171,6 +178,13 @@ class EncoderCacheManager:
         request_id = request.request_id
         if mm_hash not in self.cached:
             self.cached[mm_hash] = set()
+            self.has_cache[mm_hash] = has_cache
+        elif mm_hash in self.has_cache and not self.has_cache[mm_hash]:
+            # Cache space for this mm_hash has already been reserved earlier.
+            # The encoder output is not ready yet, so we only record the request
+            # and return without additional slot accounting.
+            self.cached[mm_hash].add(request_id)
+            return
 
         num_encoder_tokens = request.get_num_encoder_tokens(input_id)
 
@@ -231,6 +245,21 @@ class EncoderCacheManager:
         for input_id in input_ids:
             self.free_encoder_input(request, input_id)
 
+    def cache(self, request: Request) -> None:
+        """Mark encoder cache entries as ready for the given *request*.
+
+        For each cached multimodal input ID associated with the request,
+        this method marks the corresponding encoder cache entry as available
+        by setting its `has_cache[mm_hash]` flag to True. This is typically
+        invoked after asynchronous loading of encoder outputs completes, so
+        that subsequent decoding can reuse the cached encoder outputs.
+        """
+        input_ids = self.get_cached_input_ids(request).copy()
+        for input_id in input_ids:
+            mm_hash = request.mm_features[input_id].identifier
+            # The mm_hash not in cache or the req_id set is empty
+            self.has_cache[mm_hash] = True
+
     def get_freed_mm_hashes(self) -> list[str]:
         """Get and clear the list of recently freed encoder cache entries.
 
@@ -273,16 +302,16 @@ def compute_encoder_budget(
 
 def compute_text_encoder_budget(
         scheduler_config: "SchedulerConfig") -> tuple[int, int]:
-    """Compute the encoder cache budget based on the model and scheduler 
+    """Compute the encoder cache budget based on the model and scheduler
     configurations for a text-only model.
 
     Args:
         scheduler_config: Scheduler configuration.
 
     Returns:
-        - Compute budget for encoder execution, in unit of number of tokens 
+        - Compute budget for encoder execution, in unit of number of tokens
             in the input sequence.
-        - Space budget for encoder cache size, in unit of number of tokens 
+        - Space budget for encoder cache size, in unit of number of tokens
             in the input sequence.
     """
     # Currently text-only encoder-decoder models are not supported

@@ -332,9 +332,14 @@ class ECMooncakeStore:
             while self.put_queue:
                 await self.put_queue_cv.wait()
 
-    def batch_put(self, keys: list[str], tensors: list[torch.Tensor]) -> None:
+    def batch_put_async(self, keys: list[str],
+                        tensors: list[torch.Tensor]) -> None:
         self.put_loop.call_soon_threadsafe(lambda: self.put_loop.create_task(
             self._batch_put_async(keys, tensors)))
+
+    async def batch_put(self, keys: list[str],
+                        tensors: list[torch.Tensor]) -> None:
+        await self._batch_put_async(keys, tensors)
 
     async def _batch_put_async(self, keys: list[str],
                                tensors: list[torch.Tensor]) -> None:

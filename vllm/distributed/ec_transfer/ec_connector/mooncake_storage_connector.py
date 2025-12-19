@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
+import asyncio
 import os
+import threading
 from dataclasses import dataclass
 from importlib import import_module
-from typing import TYPE_CHECKING, Optional, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.ec_connector.base import (
@@ -17,7 +19,11 @@ _EC_STORE_MODULES = {
     "mooncake": "vllm.distributed.ec_transfer.ec_lookup_buffer.mooncake_store"
 }
 
+MAX_RETRY_TIMES = 3
+SLEEP_TIMEOUT = 0.005
+
 ec_store_type = os.getenv("EC_STORE_TYPE", "mooncake")
+async_handler = int(os.getenv("EC_STORE_ASYNC", 1))
 module_name = _EC_STORE_MODULES.get(ec_store_type,
                                     _EC_STORE_MODULES["mooncake"])
 ECMooncakeStore = import_module(module_name).ECMooncakeStore
@@ -30,12 +36,12 @@ logger = init_logger(__name__)
 
 @dataclass
 class MMMeta:
-    mm_hash: str
-    num_token: int
+    req_id: str
+    mm_hashes: set[str]
 
     @staticmethod
-    def make_meta(mm_hash, num_token) -> "MMMeta":
-        return MMMeta(mm_hash=mm_hash, num_token=num_token)
+    def make_meta(req_id, mm_hashes) -> "MMMeta":
+        return MMMeta(req_id=req_id, mm_hashes=mm_hashes)
 
 
 @dataclass
@@ -53,9 +59,58 @@ class ECMooncakeStorageConnector(ECConnectorBase):
 
     def __init__(self, vllm_config: "VllmConfig", role: ECConnectorRole):
         super().__init__(vllm_config=vllm_config, role=role)
-        # mm_hash -> num_tokens
-        self._mm_datas_need_loads: dict[str, int] = {}
+        # req_id -> mm_hashes
+        self._mm_datas_need_loads: dict[str, set[str]] = {}
+        self.device = self._vllm_config.device_config.device
+        if async_handler:
+            self.loop = asyncio.new_event_loop()
+            self.task_list = []
+            self.task_list.append(self.loop.create_task(self._loader_loop()))
+            self.task_list.append(self.loop.create_task(self._saver_loop()))
+
+            self._pending_load_reqs: asyncio.Queue[tuple[str, list[str], dict[
+                str, Any]]] = asyncio.Queue()
+            self._pending_save_reqs: asyncio.Queue[tuple[str, list[str], dict[
+                str, Any]]] = asyncio.Queue()
+
+            self._finished_load_reqs: asyncio.Queue[str] = asyncio.Queue()
+            self._finished_save_reqs: asyncio.Queue[str] = asyncio.Queue()
+
+            thread = threading.Thread(target=self.start_event_loop,
+                                      daemon=True)
+            thread.start()
+
         self.store = ECMooncakeStore(vllm_config)
+
+    def start_event_loop(self):
+        """start event loop"""
+        self.loop.run_until_complete(asyncio.gather(*self.task_list))
+        self.loop.close()
+
+    async def _loader_loop(self) -> None:
+        while True:
+            load_future_len = self._pending_load_reqs.qsize()
+            for _ in range(load_future_len):
+                req_id, mm_hashes, encoder_cache = await \
+                    self._pending_load_reqs.get()
+                try:
+                    tensors = self.store.batch_get(mm_hashes, self.device)
+                except Exception as e:
+                    logger.error("Batch get failed for %s with error %s",
+                                 mm_hashes, e)
+                    await self._pending_load_reqs.put\
+                        ((req_id, mm_hashes, encoder_cache))
+                    continue
+
+                if any(t is None for t in tensors):
+                    logger.error("Load failed for %s", mm_hashes)
+                    await self._pending_load_reqs.put \
+                        ((req_id, mm_hashes, encoder_cache))
+                    continue
+                for mm_hash, ec_cache in zip(mm_hashes, tensors):
+                    encoder_cache[mm_hash] = ec_cache
+                await self._finished_load_reqs.put(req_id)
+            await asyncio.sleep(SLEEP_TIMEOUT)
 
     def start_load_caches(self, encoder_cache, **kwargs) -> None:
         """
@@ -79,20 +134,44 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         if not metadata.mm_datas:
             return
 
-        mm_hashes = [
-            mm_data.mm_hash for mm_data in metadata.mm_datas
-            if mm_data.mm_hash not in encoder_cache
-        ]
-        device = self._vllm_config.device_config.device
-        tensors = self.store.batch_get(mm_hashes, device)
+        for mm_data in metadata.mm_datas:
+            mm_hashes = list(mm_data.mm_hashes)
+            if async_handler:
+                asyncio.run_coroutine_threadsafe(
+                    self._pending_load_reqs.put(
+                        (mm_data.req_id, mm_hashes, encoder_cache)), self.loop)
+            else:
+                tensors = self.store.batch_get(mm_hashes, self.device)
+                for mm_hash, ec_cache in zip(mm_hashes, tensors):
+                    if ec_cache is None:
+                        logger.error("Load failed for %s", mm_hash)
+                        continue
 
-        for mm_hash, ec_cache in zip(mm_hashes, tensors):
-            encoder_cache[mm_hash] = ec_cache
-            if ec_cache is None:
-                logger.error("Load failed for %s", mm_hash)
-            logger.debug("Load tensor for %s successfully", mm_hash)
+                    encoder_cache[mm_hash] = ec_cache
+                    logger.debug("Load tensor for %s successfully", mm_hash)
 
-    def save_caches(self, encoder_cache, mm_hash, **kwargs) -> None:
+    async def _saver_loop(self):
+        while True:
+            req_id, mm_hashes, encoder_cache = await self._pending_save_reqs.\
+                get()
+            save_success = False
+            for attempt in range(1, MAX_RETRY_TIMES + 1):
+                try:
+                    await self.store.batch_put(
+                        mm_hashes, [encoder_cache[h] for h in mm_hashes])
+                    save_success = True
+                    break
+                except Exception as e:
+                    logger.error(
+                        "Batch put failed for %s, attempt %d/%d with error %s",
+                        mm_hashes, attempt, MAX_RETRY_TIMES, e)
+                    await asyncio.sleep(SLEEP_TIMEOUT)
+            if not save_success:
+                logger.error("Failed to save caches for %s after %d retries",
+                             mm_hashes, MAX_RETRY_TIMES)
+            await self._finished_save_reqs.put(req_id)
+
+    def save_caches(self, encoder_cache, mm_hashes, **kwargs) -> None:
         """
         Save the encoder cache to the connector.
 
@@ -102,24 +181,56 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         Args:
             encoder_cache (dict[str, torch.Tensor]): A dictionary mapping
                 multimodal data hashes (`mm_hash`) to encoder cache tensors.
-            mm_hash (str): The hash of the multimodal data whose cache is
-                being saved.
+            mm_hashes (list[str]): The hash of the multimodal data whose cache
+                is being saved.
             kwargs (dict): Additional keyword arguments for the connector.
         """
         if not self.is_producer:
             return
         assert encoder_cache is not None
-        assert mm_hash is not None
-        self.store.batch_put([mm_hash], [encoder_cache[mm_hash]])
+        assert mm_hashes is not None
+        req_id = kwargs.get("req_id")
+        assert req_id is not None
+        if async_handler:
+            asyncio.run_coroutine_threadsafe(
+                self._pending_save_reqs.put(
+                    (str(req_id), mm_hashes, encoder_cache)), self.loop)
+        else:
+            self.store.batch_put_async(mm_hashes,
+                                       [encoder_cache[h] for h in mm_hashes])
 
     def wait_for_save(self):
-        self.store.wait_for_put()
+        if async_handler:
+            return
+        else:
+            self.store.wait_for_put()
+
+    def get_finished(
+        self, finished_req_ids: set[str]
+    ) -> tuple[Optional[set[str]], Optional[set[str]]]:
+        if async_handler:
+            finished_load = self._get_finished_queue_request(
+                self._finished_load_reqs)
+            finished_save = self._get_finished_queue_request(
+                self._finished_save_reqs)
+            return finished_save, finished_load
+        return None, None
+
+    def _get_finished_queue_request(self, q: asyncio.Queue) -> set[str]:
+        finished_reqs = set()
+        try:
+            while True:
+                req_id = q.get_nowait()
+                finished_reqs.add(req_id)
+        except asyncio.QueueEmpty:
+            pass
+        return finished_reqs
 
     def has_caches(
         self,
         request: "Request",
         index: Optional[int] = None,
-    ) -> Union[bool, list[bool]]:
+    ) -> Union[tuple[Any, bool], Any]:
         """
         Check if cache exist externally for each mm_data of request
 
@@ -131,11 +242,14 @@ class ECMooncakeStorageConnector(ECConnectorBase):
             List of bool indicate that ith mm_data exist in cache or not
         """
         if index is not None:
-            return self.store.batch_exists(
+            res = self.store.batch_exists(
                 [request.mm_features[index].identifier])[0]
-
-        mm_hashes = [feature.identifier for feature in request.mm_features]
-        return self.store.batch_exists(mm_hashes)
+        else:
+            mm_hashes = [feature.identifier for feature in request.mm_features]
+            res = self.store.batch_exists(mm_hashes)
+        if async_handler and not self.is_producer:
+            return res, True
+        return res, False
 
     def update_state_after_alloc(
         self,
@@ -146,9 +260,9 @@ class ECMooncakeStorageConnector(ECConnectorBase):
         Update ECConnector state after encoder cache allocation.
         """
         mm_hash = request.mm_features[index].identifier
-        num_encoder_token = request.get_num_encoder_tokens(index)
         # Insert mm_hash only if this block has not been recorded yet.
-        self._mm_datas_need_loads[mm_hash] = num_encoder_token
+        self._mm_datas_need_loads.setdefault(request.request_id,
+                                             set()).add(mm_hash)
 
     def build_connector_meta(
         self,
@@ -163,7 +277,22 @@ class ECMooncakeStorageConnector(ECConnectorBase):
             scheduler_output (SchedulerOutput): the scheduler output object.
         """
         meta = ECMooncakeStorageConnectorMetadata()
-        for mm_hash, num_encoder_token in self._mm_datas_need_loads.items():
-            meta.add_mm_data(MMMeta.make_meta(mm_hash, num_encoder_token))
+        for req_id, mm_hashes in self._mm_datas_need_loads.items():
+            meta.add_mm_data(MMMeta.make_meta(req_id, mm_hashes))
         self._mm_datas_need_loads.clear()
         return meta
+
+    def request_finished(
+            self, request: "Request") -> tuple[bool, Optional[dict[str, Any]]]:
+        """
+        Called when a request has finished, before its encoder cache is freed.
+
+        Returns:
+            True if the request is being saved/sent asynchronously and cached
+            should not be freed until the request_id is returned from
+            get_finished().
+        """
+        if async_handler and self.is_producer \
+                and request.encoder_inputs_to_schedule:
+            return True, None
+        return False, None
