@@ -265,6 +265,10 @@ class TensorMemoryPool:
 
         return tensor
 
+    def batch_free(self, addrs: list[int]):
+        for addr in addrs:
+            self.free(addr)
+
     def cleanup(self):
         """Cleans up all memory resources and resets the pool state."""
         self.free_lists.clear()
