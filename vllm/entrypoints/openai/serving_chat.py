@@ -6,7 +6,7 @@ import json
 import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from collections.abc import Sequence as GenericSequence
-from typing import Callable, Final, Optional, Union
+from typing import Callable, Final, Optional, Union, cast
 
 import jinja2
 import partial_json_parser
@@ -475,6 +475,65 @@ class OpenAIServingChat(OpenAIServing):
 
         return delta_message, function_name_returned
 
+    def add_metrics_to_request_output(
+        self, request: ChatCompletionRequest,
+        response: Union[ChatCompletionStreamResponse, ChatCompletionResponse],
+        res: RequestOutput, metric_type: str, key: str
+    ) -> Union[ChatCompletionStreamResponse, ChatCompletionResponse]:
+        """
+        Extract a single metric value from a ``RequestOutput`` and attach it to
+        the OpenAI-compatible response when metrics collection is enabled.
+
+        This method inspects ``request.enable_metrics`` for the provided
+        ``switch_name``. If the switch is enabled, it reads
+        ``res.capture_metrics_result`` (expected to be a mapping) and, when
+        present, copies the value for ``key`` into ``response.metrics[key]``,
+        casting non-``None`` values to ``int``. If metrics are not enabled,
+        or if the key is missing, ``response.metrics[key]`` is set to ``None``.
+
+        Parameters
+        ----------
+        request:
+            The original chat completion request, potentially containing the
+            ``enable_metrics`` configuration used to decide whether to record
+            this metric.
+        response:
+            The response object that will be returned to the client. Its
+            ``metrics`` dictionary is created if necessary and updated with
+            the extracted metric value under ``key``.
+        res:
+            The lower-level ``RequestOutput`` produced by the engine, which
+            provides the ``capture_metrics_result`` dictionary.
+        switch_name:
+            The name of the feature flag inside ``request.enable_metrics`` that
+            controls whether this particular metric should be extracted.
+        key:
+            The name of the metric to retrieve from
+            ``res.capture_metrics_result`` and store in ``response.metrics``.
+
+        Returns
+        -------
+        ChatCompletionStreamResponse | ChatCompletionResponse
+            The same ``response`` object, potentially updated with a metric
+            entry under ``metrics[key]``.
+        """
+        enable_metrics = getattr(request, "enable_metrics", None)
+        if enable_metrics and enable_metrics.get(metric_type, False):
+            if response.metrics is None:
+                response.metrics = {}
+            capture_metrics_result = res.capture_metrics_result
+            if isinstance(capture_metrics_result, dict) \
+                and key in capture_metrics_result:
+                value = capture_metrics_result[key]
+                try:
+                    response.metrics[key] = int(
+                        value) if value is not None else None
+                except (TypeError, ValueError):
+                    response.metrics[key] = None
+            else:
+                response.metrics[key] = None
+        return response
+
     async def chat_completion_stream_generator(
         self,
         request: ChatCompletionRequest,
@@ -608,6 +667,11 @@ class OpenAIServingChat(OpenAIServing):
                             prompt_token_ids=(res.prompt_token_ids
                                               if request.return_token_ids else
                                               None))
+                        chunk = cast(
+                            ChatCompletionStreamResponse,
+                            self.add_metrics_to_request_output(
+                                request, chunk, res, "encode",
+                                "encode_time_ms"))
 
                         # if continuous usage stats are requested, add it
                         if include_continuous_usage:
@@ -1423,6 +1487,10 @@ class OpenAIServingChat(OpenAIServing):
                               if request.return_token_ids else None),
             kv_transfer_params=final_res.kv_transfer_params,
         )
+        response = cast(
+            ChatCompletionResponse,
+            self.add_metrics_to_request_output(request, response, final_res,
+                                               "encode", "encode_time_ms"))
 
         # Log complete response if output logging is enabled
         if self.enable_log_outputs and self.request_logger:

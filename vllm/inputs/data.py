@@ -85,6 +85,12 @@ class TokensPrompt(TypedDict):
     Optional cache salt to be used for prefix caching.
     """
 
+    enable_metrics: NotRequired[dict[str, bool]]
+    """
+    Optional dictionary to enable metrics collection for this prompt.
+    Keys are metric names, and values indicate whether to enable the metric.
+    """
+
 
 class EmbedsPrompt(TypedDict):
     """Schema for a prompt provided via token embeddings."""
