@@ -1,0 +1,9 @@
+{
+    "model": "deepseekV2",
+    "params": "237b",
+    "model_path": "",
+    "batch_size": 1,
+    "infer_iters": 0,
+    "device_list": "0",
+    "dataset": "mmlu_fewshot"
+}

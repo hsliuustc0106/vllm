@@ -1,0 +1,53 @@
+MODEL_DIR: /home/ma-user/modelarts/user-job-dir/dsV3/deepseekv3-lite-base-latest_bugtest
+EXE_MODE: dynamo # [eager, dynamo]
+FFN_MODE: dynamo  # 配置FFN执行模式
+ENABLE_MLA: 1
+BATCH_SIZE: 23328 # 25920:288*90 24192:288*84
+LAYER_NUM: 61
+WORLD_SIZE: 432 # 432:144+288 384:96(86+10)+288
+ATTN_DIES: 288
+QUANT_MODE: 5  # [2, 3, 4, 5]. 2 : MLA pertensor full quant, MOE pertoken; 3: MLA pertoken, qb/kva pertensor, MOE pertoken; 4: MLA no quant, MOE pertoken; 5 MLA qb_weight quant, MOE pertoken
+NEXT_N: 1  # MTP [0, 1, 2]
+DTYPE: bfloat16  # [float16, bfloat16]
+ATTN_TP_SIZE: 1  # [1, 2, 4, 8]
+EXPERTS_TP_SIZE: 1  # [1, 2]
+ROUTE_SHARE_ON_SAME_CARD: 0  # [0, 1]
+N_ROUTED_EXPERTS_PER_RANK: 2  # this key is valid only when ROUTE_SHARE_ON_SAME_CARD is enabled
+REMAINDER_ROUTER_EXPERT: 0  # = Total_Router_EXPERTS % N_ROUTED_EXPERTS_PER_RANK 
+EXPERTS_SHARE_NUM_COPY: 16  # = FFN_DIE - ceil(Total_Router_EXPERTS / N_ROUTED_EXPERTS_PER_RANK)
+ACTUAL_SEQ_LEN: 4096
+ENABLE_CACHE_COMPILE: 1  # [0, 1]
+PREFILL_OR_DECODE: decode  # [prefill, decode]
+ON_CLOUD: 1  # [0, 1]
+WITH_CKPT: 0  # [0, 1]
+ENABLE_PROFILE: 1  # [0, 1]
+INPUT_MAX_LEN: 1  # 9216 on the cloud. It should be no less than WORLD_SIZE*2
+MAX_NEW_TOKENS: 32
+SAVE_MODEL: 0 # [0, 1]
+ENABLE_GMM_IN_SHARED: 0
+DENSE_TP_SIZE: 4 # [2, 4, 8, 16]
+KVCACHE_NZ: 1 # [0, 1]
+ENABLE_SUPERKERNEL: 1  # todo, there is a bug when MTP and superkernel enabled!
+ENABLE_LONG_SEQLEN: 0 # [0, 1]
+MOE_USE_ALL_TO_ALL: 1  # [0, 1]  used in the prefill stage
+ENABLE_PREFETCH: 1
+EMBED_TP_SIZE: 4
+ENABLE_COMBINE_DEQUANT: 0 # [0, 1]
+ENABLE_MICRO_BATCH: 1 # [0, 1]
+OPROJ_TP_SIZE: 4
+ENABLE_TND: 0  # [0, 1]
+SEQ_LEN_TND_LIST: [1024, 1024, 2048]  # if ENABLE_TND, sum(SEQ_LEN_TND_LIST) = INPUT_MAX_LEN
+ENABLE_MLA_ALLTOALL: 0 # [0, 1]
+ENABLE_WEIGHT_NZ: 1  # eager模式需要关闭weight_nz
+ENABLE_GMM_TUNE_CONFIG: 1
+USE_FA_TENSOR: 0
+ENABLE_LOW_LATENCY: 0 # [0, 1] only support ETP16 (ATP eq DenseTP) case
+SPLIT_MODE: 4 # SK拆分为几份.o，当前4最好
+ENABLE_FA_QUANT: 1 # 使能mla_prolog 和 fa全量化
+ENABLE_BATCH_WITH_RECV: 1 # 使能ffn_batching recv功能
+MICRO_BATCH_NUMBER: 3 # micro_batch数
+LAYER_OUT: "fa" # fa:FFN/FFN...ATTN/ATTN... af:ATTN/ATTN...FFN/FFN...
+USE_REAL_ACTUAL_SEQ_LEN: 0  # [0 ,1] 使用真实的actual_seq_len，需要配合TOKEN_FILE_PATH一起使用，且ENABLE_BATCH_WITH_RECV须配置为0
+TOKEN_FILE_PATH: /home/ma-user/modelarts/user-job-dir/dsV3/tokens.xlsx  # 真实ctual_seq_len统计文件
+ATTN_FFN_START_SYNC: 0  # 调测选项，用户强制同步attn侧和ffn侧的启动时机
+FFN_NEED_WAIT: 1  # 临时方案，用于解决云上环境ATTN编译过慢导致FFN侧等待超时的问题
