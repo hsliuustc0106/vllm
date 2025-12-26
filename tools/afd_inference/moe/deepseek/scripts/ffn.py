@@ -424,10 +424,10 @@ class FFNForCausalLM(PreTrainedModel):
             cache_dir = os.path.join(f"{para_dir}/models/", os.getenv("CASE_NAME", "./"))
             self.cached_model = tng.inference.cache_compile(self.ffn, config=tng_config, cache_dir=cache_dir, ge_cache=True)
 
-        # if ((self.ffn_need_wait and self.on_cloud) or self.expert_layers > 30) and exe_mode == "dynamo":
-        #     logging.info("begin sleep 1200")
-        #     time.sleep(600)  # 临时规避方案，避免attn编译过慢导致ffn侧同步超时
-        #     logging.info("end sleep 1200")
+        if ((self.ffn_need_wait and self.on_cloud) or self.expert_layers > 30) and exe_mode == "dynamo":
+            logging.info("begin sleep 1200")
+            time.sleep(1000)  # 临时规避方案，避免attn编译过慢导致ffn侧同步超时
+            logging.info("end sleep 1200")
 
     def update_kwargs(self):
         kwargs = {

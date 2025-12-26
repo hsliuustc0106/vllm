@@ -36,8 +36,8 @@ export TNG_HOST_COPY=1  # enable torchair optimize
 export PYTHONPATH=$PYTHONPATH:./
 
 # export ASCEND_RT_VISIBLE_DEVICES=0,1,2,3
-# export TORCH_LOGS="+dynamo"
-# export TORCHDYNAMO_VERBOSE=1
+export TORCH_LOGS="+dynamo"
+export TORCHDYNAMO_VERBOSE=1
 # export ASCEND_LAUNCH_BLOCKING=1
 
 # 以下两个不支持设置为0

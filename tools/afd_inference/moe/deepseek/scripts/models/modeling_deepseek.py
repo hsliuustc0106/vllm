@@ -1005,6 +1005,20 @@ class DeepseekV2DecoderLayer(nn.Module):
             else:
                 hidden_states = self.self_attn.forward(hidden_states, kv_len, actual_seq_lengths_kv, cos_sin, attention_mask, past_key_value, **kwargs)
         outputs = (residual, hidden_states)
+
+        enable_superkernel = self.enable_superkernel and (not self.is_spec)
+        if self.enable_micro_batch:
+            label = f'mlp_{self.layer_idx}_{batch_id}'
+            option = "feed-sync-all=1"
+        else:
+            label = f'mlp_{self.layer_idx}_{batch_id}'
+            option = "option_xxx"
+        with SuperKernelScope(enable_superkernel, label, option):
+            hidden_states = (
+                torch.matmul(hidden_states, self.self_attn.kv_b_proj_w_v)  # grahp fusion stage will produce a matmul+transpose operator
+                .transpose(1, 0)
+                .reshape(bsz * self.attn_tp_size, q_len, -1)
+            )
         return outputs
         
     def forward_decode_part_two(
@@ -1028,11 +1042,11 @@ class DeepseekV2DecoderLayer(nn.Module):
             label = f'mlp_{self.layer_idx}_{batch_id}'
             option = "option_xxx"
         with SuperKernelScope(enable_superkernel, label, option):
-            hidden_states = (
-                torch.matmul(hidden_states, self.self_attn.kv_b_proj_w_v)  # grahp fusion stage will produce a matmul+transpose operator
-                .transpose(1, 0)
-                .reshape(bsz * self.attn_tp_size, q_len, -1)
-            )
+            # hidden_states = (
+            #     torch.matmul(hidden_states, self.self_attn.kv_b_proj_w_v)  # grahp fusion stage will produce a matmul+transpose operator
+            #     .transpose(1, 0)
+            #     .reshape(bsz * self.attn_tp_size, q_len, -1)
+            # )
             hidden_states = self.self_attn.apply_attention_out_npu_decode(bsz * self.attn_tp_size, q_len, hidden_states)
             if self.attn_tp_size > 1:
                 hidden_states = hidden_states.view(-1, hidden_size) # bs//dp, hid
