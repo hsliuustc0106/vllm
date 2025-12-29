@@ -15,7 +15,8 @@ def get_global_te(hostname: str, device_name: Optional[str]):
         ip = ipaddress.ip_address(hostname)
         if isinstance(ip, ipaddress.IPv6Address):
             raise RuntimeError(
-                "The backend of mooncake's Ascend Direct Xfer Library currently does not support IPv6."
+                "The backend of mooncake's Ascend Direct Xfer Library "
+                "currently does not support IPv6."
             )
     except ValueError:
         pass
@@ -34,7 +35,8 @@ def get_global_te(hostname: str, device_name: Optional[str]):
                                                        "ascend", device_name)
                 if ret_value != 0:
                     raise RuntimeError(
-                        f"TransferEngine initialization failed with ret_value: {ret_value}"
+                        f"TransferEngine initialization failed with "
+                        f"ret_value: {ret_value}"
                     )
                 _global_te = transfer_engine
     return _global_te
