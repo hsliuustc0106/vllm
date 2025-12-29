@@ -22,7 +22,9 @@ import torch
 from vllm.config import VllmConfig
 from vllm.distributed.ec_transfer.utils.tensor_memory_pool import (
     TensorMemoryPool)
+from vllm.distributed.ec_transfer.utils.transfer_engine import get_global_te
 from vllm.logger import init_logger
+from vllm.utils import get_ip
 
 DEFAULT_GLOBAL_SEGMENT_SIZE = 3355443200  # 3.125 GiB
 DEFAULT_LOCAL_BUFFER_SIZE = 1073741824  # 1.0 GiB
@@ -148,15 +150,30 @@ class ECMooncakeStore:
             logger.info("  fast_transfer_buffer_size: %s",
                         self.config.fast_transfer_buffer_size)
 
-            self.store.setup(
-                self.config.local_hostname,
-                self.config.metadata_server,
-                self.config.global_segment_size,
-                self.config.local_buffer_size,
-                self.config.protocol,
-                self.config.device_name,
-                self.config.master_server_address,
-            )
+            if self.config.protocol == "ascend":
+                # if ascend direct transport is on,
+                # global transfer engine for an instance is required
+                local_hostname = get_ip()
+                transfer_engine = get_global_te(local_hostname,
+                                                device_name=None)
+                self.local_seg = local_hostname + ":" + str(
+                    transfer_engine.get_rpc_port())
+                self.store.setup(self.local_seg, "P2PHANDSHAKE",
+                                 self.config.global_segment_size,
+                                 self.config.local_buffer_size,
+                                 self.config.protocol, self.config.device_name,
+                                 self.config.master_server_address,
+                                 transfer_engine.get_engine())
+            else:
+                self.store.setup(
+                    self.config.local_hostname,
+                    self.config.metadata_server,
+                    self.config.global_segment_size,
+                    self.config.local_buffer_size,
+                    self.config.protocol,
+                    self.config.device_name,
+                    self.config.master_server_address,
+                )
 
         except ValueError as e:
             logger.error("Configuration loading failed: %s", e)
@@ -194,7 +211,8 @@ class ECMooncakeStore:
         if self.config.fast_transfer:
             self.store.unregister_buffer(self.tensor_pool.base_address,
                                          self.config.fast_transfer_buffer_size)
-            self.tensor_pool.cleanup()
+            with self.pool_lock:
+                self.tensor_pool.cleanup()
 
         self.put_loop.call_soon_threadsafe(self.put_loop.stop)
         self.put_thread.join()
@@ -276,6 +294,7 @@ class ECMooncakeStore:
             with self.pool_lock:
                 self.tensor_pool.batch_free(buffer_addrs)
             logger.error("batch_get_into failed: %s", str(e))
+            return results
 
         # NOTE: should I delay free buffer
         for id, addr, dtype, shape, read_byte in zip(exist_ids, buffer_addrs,
@@ -283,8 +302,9 @@ class ECMooncakeStore:
                                                      buffer_shapes,
                                                      read_bytes):
             if read_byte > 0:
-                results[id] = self.tensor_pool.load_tensor(
-                    addr, dtype, shape, device)
+                with self.pool_lock:
+                    results[id] = self.tensor_pool.load_tensor(
+                        addr, dtype, shape, device)
 
         with self.pool_lock:
             self.tensor_pool.batch_free(buffer_addrs)
@@ -398,6 +418,7 @@ class ECMooncakeStore:
                 ",".join(keys),
                 str(e),
             )
+            raise
 
         try:
             # Zero-copy put
@@ -417,6 +438,7 @@ class ECMooncakeStore:
                 ",".join(keys),
                 str(e),
             )
+            raise
         finally:
             if buffer_addrs:
                 with self.pool_lock:
