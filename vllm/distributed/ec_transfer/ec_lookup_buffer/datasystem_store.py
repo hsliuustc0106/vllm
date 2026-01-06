@@ -58,7 +58,7 @@ class DatasystemStoreConfig:
         return cls(
             fast_transfer=(os.getenv("FAST_TRANSFER", "false").lower()
                            in ("true", "1", "yes")),
-            transfer_timeout=int(os.getenv("TRANSFER_TIMEOUT", "1")),
+            transfer_timeout=int(os.getenv("TRANSFER_TIMEOUT", "10")),
             ds_worker_addr=os.getenv("DS_WORKER_ADDR", "127.0.0.1:31501"),
         )
 
@@ -301,7 +301,8 @@ class ECMooncakeStore:
             while self.put_queue:
                 await self.put_queue_cv.wait()
 
-    def batch_put(self, keys: list[str], tensors: list[torch.Tensor]) -> None:
+    def batch_put_async(self, keys: list[str],
+                        tensors: list[torch.Tensor]) -> None:
         """
         Submit asynchronous batch put operation for multiple key-tensor pairs.
         Routes to zero-copy or regular put based on config.
@@ -315,6 +316,17 @@ class ECMooncakeStore:
         # Submit async task to dedicated put loop
         self.put_loop.call_soon_threadsafe(lambda: self.put_loop.create_task(
             self._batch_put_async(keys, tensors)))
+
+    async def batch_put(self, keys: list[str],
+                        tensors: list[torch.Tensor]) -> None:
+        """
+        Synchronous async batch put operation for multiple key-tensor pairs.
+        Routes to zero-copy or regular put based on config.
+        Args:
+            keys: List of keys to store
+            tensors: List of torch tensors to store
+        """
+        await self._batch_put_async(keys, tensors)
 
     async def _batch_put_async(self, keys: list[str],
                                tensors: list[torch.Tensor]) -> None:
@@ -432,9 +444,16 @@ class ECMooncakeStore:
                                   self.set_param.write_mode),
                 timeout=self.config.transfer_timeout,
             )
+        except asyncio.TimeoutError:
+            logger.error(
+                "Failed to put bytes_list for keys %s: timedout after %s s",
+                ",".join(keys),
+                self.config.transfer_timeout,
+            )
         except Exception as e:
             logger.error(
-                "Failed to put bytes_list for keys %s with error %s",
+                "Failed to put bytes_list for keys with error type: %s, %s",
                 ",".join(keys),
+                type(e).__name__,
                 str(e),
             )
