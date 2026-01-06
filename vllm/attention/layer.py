@@ -28,7 +28,7 @@ from vllm.model_executor.layers.quantization.utils.quant_utils import (
     GroupShape)
 from vllm.model_executor.models.vision import get_vit_attn_backend
 from vllm.platforms import _Backend, current_platform
-from vllm.utils import GiB_bytes, direct_register_custom_op
+from vllm.utils import GiB_bytes, direct_register_custom_op, load_and_pack_head_ids
 
 logger = init_logger(__name__)
 USE_XFORMERS_OPS = None
@@ -620,6 +620,21 @@ def unified_attention_with_output(
                       output=output,
                       output_scale=output_scale,
                       output_block_scale=output_block_scale)
+    
+    if attn_metadata:
+        context_tokens_start = 128
+        obs_window_size = 256
+        if query.shape[0] > context_tokens_start + obs_window_size:
+            context_tokens_end = query.shape[0] - obs_window_size
+            head_block_ids = load_and_pack_head_ids()
+            layer_idx = int(layer_name.split(".")[2])
+            if layer_idx in head_block_ids[0]:
+                context_token_blocks = attn_metadata.block_table[0, context_tokens_start // 16 : context_tokens_end // 16]
+                head_idx = head_block_ids[1][layer_idx]
+                i, j = torch.meshgrid(context_token_blocks, \
+                        torch.tensor(head_idx, dtype=context_token_blocks.dtype, device=context_token_blocks.device), \
+                        indexing='ij')
+                kv_cache[1, i, :, j, :] = 0.0
 
     maybe_save_kv_layer_to_connector(layer_name, kv_cache)
 

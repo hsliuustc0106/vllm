@@ -83,6 +83,29 @@ if TYPE_CHECKING:
 
 logger = init_logger(__name__)
 
+
+def load_and_pack_head_ids():
+    head_block_ids_fname = os.path.join(
+        os.path.dirname(__file__),
+        "llama-3.1-8b-inst_head_block_ids_sp-0.5.npy",
+    )
+    with open(head_block_ids_fname, "rb") as f:
+        head_block_ids = np.load(f)
+    
+    pairs = head_block_ids.tolist()
+
+    by_layer = defaultdict(list)
+    for L, H in pairs:
+        by_layer[L].append(H)
+
+    layers_present = sorted(by_layer.keys())
+    per_layer_heads = [list(by_layer.get(i, ())) for i in range(32)]
+
+    assert sum(len(heads) for heads in per_layer_heads) == len(pairs), "Mismatch between packed pairs and original pairs"
+
+    return [layers_present, per_layer_heads]
+
+
 # This value is chosen to have a balance between ITL and TTFT. Note it is
 # not optimized for throughput.
 DEFAULT_MAX_NUM_BATCHED_TOKENS = 2048
