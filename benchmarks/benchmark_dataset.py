@@ -895,3 +895,60 @@ class ASRDataset(HuggingFaceDataset):
                            " what Whisper supports.", skipped)
         self.maybe_oversample_requests(sampled_requests, num_requests)
         return sampled_requests
+
+
+class CustomInputLenDataset(BenchmarkDataset):
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.load_data()
+
+    def load_data(self) -> None:
+        if self.dataset_path is None:
+            raise ValueError("Dataset path cannot be None")
+
+        self.data = json.load(open(self.dataset_path, 'r', encoding='utf-8'))
+
+        random.seed(self.random_seed)
+        random.shuffle(self.data)
+
+    def sample(self,
+               tokenizer: PreTrainedTokenizerBase,
+               num_requests: int,
+               min_input_len: int = 32000,
+               max_input_len: int = 100000,
+               output_len: int = 256,
+               skip_short: bool = True,
+               **kwargs):
+        samples = []
+        print(f"len = {len(self.data)}")
+        for entry in self.data:
+            if len(samples) >= num_requests:
+                break
+            prompt = entry.get("context", "")
+            if not prompt:
+                continue
+
+            prompt_ids = tokenizer(prompt, add_special_tokens=False).input_ids
+            prompt_len = len(prompt_ids)
+
+            if skip_short and prompt_len < min_input_len:
+                continue
+            if prompt_len > max_input_len:
+                continue
+
+            if not is_valid_sequence(
+                prompt_len,
+                output_len,
+                min_len=4,
+                max_prompt_len=max_input_len,
+                max_total_len=max_input_len+output_len,
+                skip_min_output_len_check=True,
+            ):
+                continue
+            print(f"prompt_len={prompt_len}")
+            samples.append(SampleRequest(
+                prompt=prompt, prompt_len=prompt_len, expected_output_len=output_len,
+            ))
+            print(f"samples={len(samples)}")
+            self.maybe_oversample_requests(samples, num_requests)
+            return samples

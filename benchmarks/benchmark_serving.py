@@ -54,7 +54,7 @@ from benchmark_dataset import (AIMODataset, ASRDataset, BurstGPTDataset,
                                ConversationDataset, HuggingFaceDataset,
                                InstructCoderDataset, RandomDataset,
                                SampleRequest, ShareGPTDataset, SonnetDataset,
-                               VisionArenaDataset)
+                               VisionArenaDataset, CustomInputLenDataset)
 from benchmark_utils import convert_to_pytorch_benchmark_format, write_to_json
 
 MILLISECONDS_TO_SECONDS_CONVERSION = 1000
@@ -654,7 +654,16 @@ def main(args: argparse.Namespace):
                 input_len=args.random_input_len,
                 output_len=args.random_output_len,
                 range_ratio=args.random_range_ratio,
-            )
+            ),
+            "custom_jsonl":
+                lambda: CustomInputLenDataset(
+                    dataset_path=args.dataset_path,
+                    random_input_len=args.seed,).sample(
+                        tokenizer=tokenizer,
+                        num_requests=args.num_prompts,
+                        min_input_len=args.random_min_input_len,
+                        max_input_len=args.random_max_input_len,
+                        output_len=args.random_output_len,)
         }
 
         try:
@@ -799,7 +808,7 @@ if __name__ == "__main__":
         "--dataset-name",
         type=str,
         default="sharegpt",
-        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf"],
+        choices=["sharegpt", "burstgpt", "sonnet", "random", "hf", "custom_jsonl"],
         help="Name of the dataset to benchmark on.",
     )
     parser.add_argument("--dataset-path",
@@ -1044,6 +1053,23 @@ if __name__ == "__main__":
         default=None,
         help="Output length for each request. Overrides the output lengths "
         "from the sampled HF dataset.",
+    )
+
+    custom_group = parser.add_argument_group("custom dataset options")
+    custom_group.add_argument(
+        "--custom-min-input-len",
+        type=int,
+        default=32000,
+    )
+    custom_group.add_argument(
+        "--custom-max-input-len",
+        type=int,
+        default=100000,
+    )
+    custom_group.add_argument(
+        "--custom-output-len",
+        type=int,
+        default=256,
     )
 
     sampling_group = parser.add_argument_group("sampling parameters")
