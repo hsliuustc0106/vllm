@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 import pytest
 import torch
 
@@ -8,29 +7,17 @@ from vllm.platforms import current_platform
 from vllm.scalar_type import scalar_types
 
 if not current_platform.has_device_capability(100):
-    pytest.skip(
-        reason="Nvfp4 Requires compute capability of 10 or above.",
-        allow_module_level=True,
-    )
+    pytest.skip(reason="Nvfp4 Requires compute capability of 10 or above.",
+                allow_module_level=True)
 
 DTYPES = [torch.float16, torch.bfloat16]
 SHAPES = [(128, 64), (128, 128), (256, 64), (256, 128)]
-PAD_SHAPES = [
-    (90, 64),
-    (150, 64),
-    (128, 48),
-    (128, 80),
-    (150, 80),
-    (90, 48),
-    (90, 128),
-    (150, 128),
-    (150, 48),
-    (90, 80),
-]
+PAD_SHAPES = [(90, 64), (150, 64), (128, 48), (128, 80), (150, 80), (90, 48),
+              (90, 128), (150, 128), (150, 48), (90, 80)]
 SEEDS = [42]
-CUDA_DEVICES = ["cuda:0"]
+CUDA_DEVICES = ['cuda:0']
 
-FLOAT4_E2M1_MAX = scalar_types.float4_e2m1f.max()
+FLOAT4_E2M1_MAX = scalar_types.float4_e2m1fn.max()
 FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 
 # E2M1 to float
@@ -43,22 +30,7 @@ FLOAT8_E4M3_MAX = torch.finfo(torch.float8_e4m3fn).max
 # 0001 -> 0.5
 # 0000 -> 0
 E2M1_TO_FLOAT32 = [
-    0.0,
-    0.5,
-    1.0,
-    1.5,
-    2.0,
-    3.0,
-    4.0,
-    6.0,
-    0.0,
-    -0.5,
-    -1.0,
-    -1.5,
-    -2.0,
-    -3.0,
-    -4.0,
-    -6.0,
+    0., 0.5, 1., 1.5, 2., 3., 4., 6., 0., -0.5, -1., -1.5, -2., -3., -4., -6.
 ]
 BLOCK_SIZE = 16
 
@@ -101,7 +73,8 @@ def ref_nvfp4_quant(x, global_scale):
     assert x.ndim == 2
     m, n = x.shape
     x = torch.reshape(x, (m, n // BLOCK_SIZE, BLOCK_SIZE))
-    vec_max = torch.max(torch.abs(x), dim=-1, keepdim=True)[0].to(torch.float32)
+    vec_max = torch.max(torch.abs(x), dim=-1,
+                        keepdim=True)[0].to(torch.float32)
     scale = global_scale * (vec_max * get_reciprocal(FLOAT4_E2M1_MAX))
     scale = scale.to(torch.float8_e4m3fn).to(torch.float32)
     output_scale = get_reciprocal(scale * get_reciprocal(global_scale))
@@ -157,7 +130,7 @@ def test_quantize_to_fp4(
 def test_quantize_to_fp4_padded(pad_shape: tuple[int, int]) -> None:
     dtype = torch.float16
     current_platform.seed_everything(42)
-    torch.set_default_device("cuda:0")
+    torch.set_default_device('cuda:0')
 
     m, n = pad_shape
 
@@ -168,7 +141,9 @@ def test_quantize_to_fp4_padded(pad_shape: tuple[int, int]) -> None:
     out_ref, scale_ref = ref_nvfp4_quant(x, global_scale)
 
     out, out_scale = ops.scaled_fp4_quant(x, global_scale)
+
     scale_ans = recover_swizzled_scales(out_scale, m, n)
     out_ans = cast_from_fp4(out, m, n)
+
     torch.testing.assert_close(out_ans, out_ref)
     torch.testing.assert_close(scale_ans, scale_ref)

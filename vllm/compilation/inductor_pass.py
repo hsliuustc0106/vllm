@@ -1,34 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
-import functools
 import hashlib
 import inspect
 import json
 import types
-from collections.abc import Callable
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Callable, Dict, Optional, Union
 
 import torch
 from torch import fx
-from torch._subclasses.fake_tensor import FakeTensorMode, unset_fake_temporarily
 
-from vllm.utils.torch_utils import is_torch_equal_or_newer
+from vllm.utils import is_torch_equal_or_newer
 
 if is_torch_equal_or_newer("2.6"):
     from torch._inductor.custom_graph_pass import CustomGraphPass
 else:
     # CustomGraphPass is not present in 2.5 or lower, import our version
-    from .torch25_custom_graph_pass import (
-        Torch25CustomGraphPass as CustomGraphPass,
-    )
+    from .torch25_custom_graph_pass import (  # noqa: yapf
+        Torch25CustomGraphPass as CustomGraphPass)
 
 _pass_context = None
 
 
 class PassContext:
-    def __init__(self, runtime_shape: int | None):
+
+    def __init__(self, runtime_shape: Optional[int]):
         self.runtime_shape = runtime_shape
 
 
@@ -39,7 +35,7 @@ def get_pass_context() -> PassContext:
 
 
 @contextmanager
-def pass_context(runtime_shape: int | None):
+def pass_context(runtime_shape: Optional[int]):
     """A context manager that stores the current pass context,
     usually it is a list of sizes to specialize.
     """
@@ -68,7 +64,7 @@ class InductorPass(CustomGraphPass):
         return InductorPass.hash_source(self)
 
     @staticmethod
-    def hash_source(*srcs: str | Any):
+    def hash_source(*srcs: Union[str, Any]):
         """
         Utility method to hash the sources of functions or objects.
         :param srcs: strings or objects to add to the hash.
@@ -79,16 +75,15 @@ class InductorPass(CustomGraphPass):
         for src in srcs:
             if isinstance(src, str):
                 src_str = src
-            elif isinstance(src, (types.FunctionType, type)):
+            elif isinstance(src, types.FunctionType):
                 src_str = inspect.getsource(src)
             else:
-                # object instance
                 src_str = inspect.getsource(src.__class__)
             hasher.update(src_str.encode("utf-8"))
         return hasher.hexdigest()
 
     @staticmethod
-    def hash_dict(dict_: dict[Any, Any]):
+    def hash_dict(dict_: Dict[Any, Any]):
         """
         Utility method to hash a dictionary, can alternatively be used for uuid.
         :return: A sha256 hash of the json rep of the dictionary.
@@ -96,7 +91,7 @@ class InductorPass(CustomGraphPass):
         encoded = json.dumps(dict_, sort_keys=True).encode("utf-8")
         return hashlib.sha256(encoded).hexdigest()
 
-    def is_applicable(self, shape: int | None):
+    def is_applicable_for_shape(self, shape: Optional[int]):
         return True
 
 
@@ -106,7 +101,9 @@ class CallableInductorPass(InductorPass):
     implementation of the UUID.
     """
 
-    def __init__(self, callable: Callable[[fx.Graph], None], uuid: Any | None = None):
+    def __init__(self,
+                 callable: Callable[[fx.Graph], None],
+                 uuid: Optional[Any] = None):
         self.callable = callable
         self._uuid = self.hash_source(callable) if uuid is None else uuid
 
@@ -115,19 +112,3 @@ class CallableInductorPass(InductorPass):
 
     def uuid(self) -> Any:
         return self._uuid
-
-
-def enable_fake_mode(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """
-    Applies a FakeTensorMode context. This is useful when you don't want to
-    create or run things with real tensors.
-    """
-
-    @functools.wraps(fn)
-    def fn_new(*args, **kwargs) -> Any:
-        with torch._guards.tracing(None), unset_fake_temporarily(), FakeTensorMode():
-            result = fn(*args, **kwargs)
-
-        return result
-
-    return fn_new

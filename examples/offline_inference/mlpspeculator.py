@@ -1,10 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
 This file demonstrates the usage of text generation with an LLM model,
 comparing the performance with and without speculative decoding.
 
-Note that this example is out of date and not supported in vLLM v1.
+Note that still not support `v1`:
+VLLM_USE_V1=0 python examples/offline_inference/mlpspeculator.py
 """
 
 import gc
@@ -13,9 +13,8 @@ import time
 from vllm import LLM, SamplingParams
 
 
-def time_generation(
-    llm: LLM, prompts: list[str], sampling_params: SamplingParams, title: str
-):
+def time_generation(llm: LLM, prompts: list[str],
+                    sampling_params: SamplingParams, title: str):
     # Generate texts from the prompts. The output is a list of RequestOutput
     # objects that contain the prompt, generated text, and other information.
     # Warmup first
@@ -26,7 +25,8 @@ def time_generation(
     end = time.time()
     print("-" * 50)
     print(title)
-    print("time: ", (end - start) / sum(len(o.outputs[0].token_ids) for o in outputs))
+    print("time: ",
+          (end - start) / sum(len(o.outputs[0].token_ids) for o in outputs))
     # Print the outputs.
     for output in outputs:
         generated_text = output.outputs[0].text
@@ -38,8 +38,7 @@ def main():
     template = (
         "Below is an instruction that describes a task. Write a response "
         "that appropriately completes the request.\n\n### Instruction:\n{}"
-        "\n\n### Response:\n"
-    )
+        "\n\n### Response:\n")
 
     # Sample prompts.
     prompts = [

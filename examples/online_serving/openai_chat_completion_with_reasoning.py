@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """
 An example shows how to generate chat completions from reasoning models
 like DeepSeekR1.
@@ -9,7 +8,7 @@ with the reasoning parser:
 
 ```bash
 vllm serve deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B \
-    --reasoning-parser deepseek_r1
+     --enable-reasoning --reasoning-parser deepseek_r1
 ```
 
 This example demonstrates how to generate chat completions from reasoning models
@@ -38,26 +37,26 @@ def main():
     # For granite, add: `extra_body={"chat_template_kwargs": {"thinking": True}}`
     response = client.chat.completions.create(model=model, messages=messages)
 
-    reasoning = response.choices[0].message.reasoning
+    reasoning_content = response.choices[0].message.reasoning_content
     content = response.choices[0].message.content
 
-    print("reasoning for Round 1:", reasoning)
+    print("reasoning_content for Round 1:", reasoning_content)
     print("content for Round 1:", content)
 
     # Round 2
     messages.append({"role": "assistant", "content": content})
-    messages.append(
-        {
-            "role": "user",
-            "content": "How many Rs are there in the word 'strawberry'?",
-        }
-    )
+    messages.append({
+        "role":
+        "user",
+        "content":
+        "How many Rs are there in the word 'strawberry'?",
+    })
     response = client.chat.completions.create(model=model, messages=messages)
 
-    reasoning = response.choices[0].message.reasoning
+    reasoning_content = response.choices[0].message.reasoning_content
     content = response.choices[0].message.content
 
-    print("reasoning for Round 2:", reasoning)
+    print("reasoning_content for Round 2:", reasoning_content)
     print("content for Round 2:", content)
 
 

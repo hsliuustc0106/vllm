@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import openai  # use the official client for correctness check
 import pytest
@@ -26,6 +25,8 @@ def server():
         "--enable-chunked-prefill",
         "--max-num-batched-tokens",
         "1000",
+        # large prompts create a lot of output
+        "--disable-log-requests",
     ]
 
     with RemoteOpenAIServer(MODEL_NAME, args) as remote_server:
@@ -40,8 +41,7 @@ async def client(server):
 
 @pytest.mark.asyncio
 async def test_completion_stream_options_and_logprobs_with_long_prompts(
-    client: openai.AsyncOpenAI,
-):
+        client: openai.AsyncOpenAI):
     # Test stream with long prompt
     prompt = "What is the capital of France?" * 400
 
@@ -63,9 +63,8 @@ async def test_completion_stream_options_and_logprobs_with_long_prompts(
     async for chunk in stream:
         assert chunk.usage.prompt_tokens >= 0
         assert chunk.usage.completion_tokens >= 0
-        assert chunk.usage.total_tokens == (
-            chunk.usage.prompt_tokens + chunk.usage.completion_tokens
-        )
+        assert chunk.usage.total_tokens == (chunk.usage.prompt_tokens +
+                                            chunk.usage.completion_tokens)
         if not finished:
             tokens_received += 1
             assert chunk.choices[0].text
@@ -79,13 +78,15 @@ async def test_completion_stream_options_and_logprobs_with_long_prompts(
 
 @pytest.mark.asyncio
 async def test_chat_completion_stream_options_and_logprobs_with_long_prompts(
-    client: openai.AsyncOpenAI,
-):
+        client: openai.AsyncOpenAI):
     # Test stream with long prompt
-    messages = [
-        {"role": "system", "content": "You are a helpful assistant."},
-        {"role": "user", "content": "What is the capital of France?" * 400},
-    ]
+    messages = [{
+        "role": "system",
+        "content": "You are a helpful assistant."
+    }, {
+        "role": "user",
+        "content": "What is the capital of France?" * 400
+    }]
     stream = await client.chat.completions.create(
         model=MODEL_NAME,
         messages=messages,
@@ -106,9 +107,8 @@ async def test_chat_completion_stream_options_and_logprobs_with_long_prompts(
     async for chunk in stream:
         assert chunk.usage.prompt_tokens >= 0
         assert chunk.usage.completion_tokens >= 0
-        assert chunk.usage.total_tokens == (
-            chunk.usage.prompt_tokens + chunk.usage.completion_tokens
-        )
+        assert chunk.usage.total_tokens == (chunk.usage.prompt_tokens +
+                                            chunk.usage.completion_tokens)
 
         if not finished:
             if chunk.choices[0].delta.content == "":

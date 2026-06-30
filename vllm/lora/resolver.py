@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 from abc import ABC, abstractmethod
-from collections.abc import Set
 from dataclasses import dataclass, field
+from typing import AbstractSet, Dict, Optional
 
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
@@ -21,9 +20,8 @@ class LoRAResolver(ABC):
     """
 
     @abstractmethod
-    async def resolve_lora(
-        self, base_model_name: str, lora_name: str
-    ) -> LoRARequest | None:
+    async def resolve_lora(self, base_model_name: str,
+                           lora_name: str) -> Optional[LoRARequest]:
         """Abstract method to resolve and fetch a LoRA model adapter.
 
         Implements logic to locate and download LoRA adapter based on the name.
@@ -42,9 +40,9 @@ class LoRAResolver(ABC):
 
 @dataclass
 class _LoRAResolverRegistry:
-    resolvers: dict[str, LoRAResolver] = field(default_factory=dict)
+    resolvers: Dict[str, LoRAResolver] = field(default_factory=dict)
 
-    def get_supported_resolvers(self) -> Set[str]:
+    def get_supported_resolvers(self) -> AbstractSet[str]:
         """Get all registered resolver names."""
         return self.resolvers.keys()
 
@@ -61,10 +59,8 @@ class _LoRAResolverRegistry:
         if resolver_name in self.resolvers:
             logger.warning(
                 "LoRA resolver %s is already registered, and will be "
-                "overwritten by the new resolver instance %s.",
-                resolver_name,
-                resolver,
-            )
+                "overwritten by the new resolver instance %s.", resolver_name,
+                resolver)
 
         self.resolvers[resolver_name] = resolver
 
@@ -80,8 +76,7 @@ class _LoRAResolverRegistry:
         if resolver_name not in self.resolvers:
             raise KeyError(
                 f"LoRA resolver '{resolver_name}' not found. "
-                f"Available resolvers: {list(self.resolvers.keys())}"
-            )
+                f"Available resolvers: {list(self.resolvers.keys())}")
         return self.resolvers[resolver_name]
 
 

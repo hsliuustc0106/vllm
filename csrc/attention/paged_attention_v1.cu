@@ -16,8 +16,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+
 #include "attention_kernels.cuh"
-#include "../cuda_compat.h"
+
+#ifndef USE_ROCM
+  #define WARP_SIZE 32
+#else
+  #define WARP_SIZE warpSize
+#endif
 
 #define MAX(a, b) ((a) > (b) ? (a) : (b))
 #define MIN(a, b) ((a) < (b) ? (a) : (b))
@@ -59,6 +65,9 @@ void paged_attention_v1_launcher(
   int kv_block_stride = key_cache.stride(0);
   int kv_head_stride = key_cache.stride(1);
 
+  [[maybe_unused]] int thread_group_size = MAX(WARP_SIZE / BLOCK_SIZE, 1);
+  assert(head_size % thread_group_size == 0);
+
   // NOTE: alibi_slopes is optional.
   const float* alibi_slopes_ptr =
       alibi_slopes
@@ -74,7 +83,7 @@ void paged_attention_v1_launcher(
   const float* k_scale_ptr = reinterpret_cast<const float*>(k_scale.data_ptr());
   const float* v_scale_ptr = reinterpret_cast<const float*>(v_scale.data_ptr());
 
-  const int NUM_WARPS = NUM_THREADS / WARP_SIZE;
+  constexpr int NUM_WARPS = NUM_THREADS / WARP_SIZE;
   int padded_max_seq_len =
       DIVIDE_ROUND_UP(max_seq_len, BLOCK_SIZE) * BLOCK_SIZE;
   int logits_size = padded_max_seq_len * sizeof(float);
@@ -181,6 +190,7 @@ void paged_attention_v1(
                              CALL_V1_LAUNCHER_BLOCK_SIZE)
 }
 
+#undef WARP_SIZE
 #undef MAX
 #undef MIN
 #undef DIVIDE_ROUND_UP

@@ -1,36 +1,17 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from typing import TYPE_CHECKING, Optional
-
-from vllm.multimodal import MULTIMODAL_REGISTRY, MultiModalRegistry
+from typing import TYPE_CHECKING, Optional, Union
 
 if TYPE_CHECKING:
-    from vllm.config import VllmConfig
-    from vllm.distributed.kv_transfer.kv_connector.v1 import KVConnectorBase_V1
-    from vllm.v1.core.sched.output import GrammarOutput, SchedulerOutput
+    from vllm.v1.core.sched.output import SchedulerOutput
     from vllm.v1.engine import EngineCoreOutputs
-    from vllm.v1.kv_cache_interface import KVCacheConfig
     from vllm.v1.metrics.stats import SchedulerStats
-    from vllm.v1.outputs import DraftTokenIds, ModelRunnerOutput
+    from vllm.v1.outputs import ModelRunnerOutput
     from vllm.v1.request import Request, RequestStatus
-    from vllm.v1.structured_output import StructuredOutputManager
 
 
 class SchedulerInterface(ABC):
-    @abstractmethod
-    def __init__(
-        self,
-        vllm_config: "VllmConfig",
-        kv_cache_config: "KVCacheConfig",
-        structured_output_manager: "StructuredOutputManager",
-        block_size: int,
-        mm_registry: MultiModalRegistry = MULTIMODAL_REGISTRY,
-        include_finished_set: bool = False,
-        log_stats: bool = False,
-    ) -> None:
-        raise NotImplementedError
 
     @abstractmethod
     def schedule(self) -> "SchedulerOutput":
@@ -59,17 +40,11 @@ class SchedulerInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_grammar_bitmask(
-        self, scheduler_output: "SchedulerOutput"
-    ) -> "GrammarOutput | None":
-        raise NotImplementedError
-
-    @abstractmethod
     def update_from_output(
         self,
         scheduler_output: "SchedulerOutput",
         model_runner_output: "ModelRunnerOutput",
-    ) -> dict[int, "EngineCoreOutputs"]:
+    ) -> "EngineCoreOutputs":
         """Update the scheduler state based on the model runner output.
 
         This method is called after the model runner has processed the scheduled
@@ -79,23 +54,14 @@ class SchedulerInterface(ABC):
         for each request.
 
         Returns:
-            A dict of client index to EngineCoreOutputs object containing the
-            outputs for each request originating from that client.
+            A EngineCoreOutputs object containing the outputs for each request.
         """
-        raise NotImplementedError
-
-    @abstractmethod
-    def update_draft_token_ids(
-        self,
-        draft_token_ids: "DraftTokenIds",
-    ) -> None:
-        """Update the draft token ids for the scheduled requests."""
         raise NotImplementedError
 
     @abstractmethod
     def add_request(self, request: "Request") -> None:
         """Add a new request to the scheduler's internal queue.
-
+        
         Args:
             request: The new request being added.
         """
@@ -104,7 +70,7 @@ class SchedulerInterface(ABC):
     @abstractmethod
     def finish_requests(
         self,
-        request_ids: str | Iterable[str],
+        request_ids: Union[str, Iterable[str]],
         finished_status: "RequestStatus",
     ) -> None:
         """Finish the requests in the scheduler's internal queue. If the request
@@ -114,7 +80,7 @@ class SchedulerInterface(ABC):
         1. When the request is aborted by the client.
         2. When the frontend process detects a stop string of the request after
            de-tokenizing its generated tokens.
-
+           
         Args:
             request_ids: A single or a list of request IDs.
             finished_status: The finished status of the given requests.
@@ -160,22 +126,9 @@ class SchedulerInterface(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def get_request_counts(self) -> tuple[int, int]:
-        """Returns (num_running_reqs, num_waiting_reqs)."""
-        raise NotImplementedError
-
-    @abstractmethod
     def make_stats(self) -> Optional["SchedulerStats"]:
         """Make a SchedulerStats object for logging.
 
         The SchedulerStats object is created for every scheduling step.
         """
         raise NotImplementedError
-
-    @abstractmethod
-    def shutdown(self) -> None:
-        """Shutdown the scheduler."""
-        raise NotImplementedError
-
-    def get_kv_connector(self) -> Optional["KVConnectorBase_V1"]:
-        return None

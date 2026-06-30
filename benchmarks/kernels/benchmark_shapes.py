@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 WEIGHT_SHAPES = {
     "ideal": [[4 * 256 * 32, 256 * 32]],
@@ -78,11 +77,11 @@ WEIGHT_SHAPES = {
 }
 
 WEIGHT_SHAPES_MOE = {
-    "mistralai/Mixtral-8x7B-Instruct-v0.1": [
+    "nm-testing/Mixtral-8x7B-Instruct-v0.1": [
         [8, 2, 4096, 28672],
         [8, 2, 14336, 4096],
     ],
-    "deepseek-ai/DeepSeek-V2-Lite": [
+    "nm-testing/deepseekv2-lite": [
         [64, 6, 2048, 1408],
     ],
     "ibm-granite/granite-3.0-1b-a400m": [

@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import pytest
 
@@ -11,12 +10,8 @@ from vllm.model_executor.models.llama import LlamaForCausalLM
 # Provide absolute path and huggingface lora ids
 lora_fixture_name = ["sql_lora_files", "sql_lora_huggingface_id"]
 LLAMA_LORA_MODULES = [
-    "qkv_proj",
-    "o_proj",
-    "gate_up_proj",
-    "down_proj",
-    "embed_tokens",
-    "lm_head",
+    "qkv_proj", "o_proj", "gate_up_proj", "down_proj", "embed_tokens",
+    "lm_head"
 ]
 
 
@@ -35,7 +30,7 @@ def test_load_checkpoints_from_huggingface(lora_fixture_name, request):
 
     lora_path = get_adapter_absolute_path(lora_name)
 
-    # lora loading should work for either absolute path and huggingface id.
+    # lora loading should work for either absolute path and hugggingface id.
     peft_helper = PEFTHelper.from_local_dir(lora_path, 4096)
     lora_model = LoRAModel.from_local_checkpoint(
         lora_path,
@@ -44,8 +39,7 @@ def test_load_checkpoints_from_huggingface(lora_fixture_name, request):
         lora_model_id=1,
         device="cpu",
         embedding_modules=embedding_modules,
-        embedding_padding_modules=embed_padding_modules,
-    )
+        embedding_padding_modules=embed_padding_modules)
 
     # Assertions to ensure the model is loaded correctly
     assert lora_model is not None, "LoRAModel is not loaded correctly"

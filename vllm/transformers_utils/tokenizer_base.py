@@ -1,15 +1,15 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 import importlib
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 if TYPE_CHECKING:
     from vllm.entrypoints.chat_utils import ChatCompletionMessageParam
 
 
 class TokenizerBase(ABC):
+
     @property
     @abstractmethod
     def all_special_tokens_extended(self) -> list[str]:
@@ -60,22 +60,17 @@ class TokenizerBase(ABC):
     def max_token_id(self) -> int:
         raise NotImplementedError()
 
-    @property
-    @abstractmethod
-    def truncation_side(self) -> str:
-        raise NotImplementedError()
-
     def __len__(self) -> int:
         return self.vocab_size
 
     @abstractmethod
     def __call__(
         self,
-        text: str | list[str] | list[int],
-        text_pair: str | None = None,
+        text: Union[str, list[str], list[int]],
+        text_pair: Optional[str] = None,
         add_special_tokens: bool = False,
         truncation: bool = False,
-        max_length: int | None = None,
+        max_length: Optional[int] = None,
     ):
         raise NotImplementedError()
 
@@ -92,27 +87,21 @@ class TokenizerBase(ABC):
         self,
         text: str,
         truncation: bool = False,
-        max_length: int | None = None,
+        max_length: Optional[int] = None,
     ) -> list[int]:
         raise NotImplementedError()
 
     @abstractmethod
-    def encode(
-        self,
-        text: str,
-        truncation: bool | None = None,
-        max_length: int | None = None,
-        add_special_tokens: bool | None = None,
-    ) -> list[int]:
+    def encode(self,
+               text: str,
+               add_special_tokens: Optional[bool] = None) -> list[int]:
         raise NotImplementedError()
 
     @abstractmethod
-    def apply_chat_template(
-        self,
-        messages: list["ChatCompletionMessageParam"],
-        tools: list[dict[str, Any]] | None = None,
-        **kwargs,
-    ) -> list[int]:
+    def apply_chat_template(self,
+                            messages: list["ChatCompletionMessageParam"],
+                            tools: Optional[list[dict[str, Any]]] = None,
+                            **kwargs) -> list[int]:
         raise NotImplementedError()
 
     @abstractmethod
@@ -120,7 +109,9 @@ class TokenizerBase(ABC):
         raise NotImplementedError()
 
     @abstractmethod
-    def decode(self, ids: list[int] | int, skip_special_tokens: bool = True) -> str:
+    def decode(self,
+               ids: Union[list[int], int],
+               skip_special_tokens: bool = True) -> str:
         raise NotImplementedError()
 
     @abstractmethod

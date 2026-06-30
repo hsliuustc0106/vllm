@@ -1,5 +1,4 @@
 # SPDX-License-Identifier: Apache-2.0
-# SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 # Adapted from llama.py
 """Inference-only Phi3 model code inherit from Llama.py"""
@@ -8,6 +7,7 @@ from vllm.model_executor.models.llama import LlamaForCausalLM
 
 
 class Phi3ForCausalLM(LlamaForCausalLM):
+
     packed_modules_mapping = {
         "qkv_proj": [
             "qkv_proj",

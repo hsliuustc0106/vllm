@@ -96,7 +96,7 @@ void rms_norm_dynamic_per_token_quant_dispatch(
     std::optional<at::Tensor> const& scale_ub,
     std::optional<at::Tensor>& residual) {
   int32_t hidden_size = input.size(-1);
-  auto num_tokens = input.numel() / hidden_size;
+  int32_t num_tokens = input.numel() / hidden_size;
 
   dim3 grid(num_tokens);
   dim3 block(std::min(hidden_size, 1024));
@@ -145,11 +145,7 @@ void rms_norm_dynamic_per_token_quant(
   if (scale_ub.has_value()) {
     TORCH_CHECK(out.dtype() == kFp8Type);
   }
-  TORCH_CHECK(weight.dtype() == input.dtype());
   TORCH_CHECK(scales.dtype() == torch::kFloat32);
-  if (residual) {
-    TORCH_CHECK(residual->scalar_type() == input.scalar_type());
-  }
 
   VLLM_DISPATCH_FLOATING_TYPES(
       input.scalar_type(), "rms_norm_dynamic_per_token_quant_dispatch", [&] {

@@ -13,7 +13,8 @@ Prometheus metric logging is enabled by default in the OpenAI-compatible server.
 
 ```bash
 vllm serve mistralai/Mistral-7B-v0.1 \
-    --max-model-len 2048
+    --max-model-len 2048 \
+    --disable-log-requests
 ```
 
 Launch Prometheus and Grafana servers with `docker compose`:
@@ -27,7 +28,7 @@ Submit some sample requests to the server:
 ```bash
 wget https://huggingface.co/datasets/anon8231489123/ShareGPT_Vicuna_unfiltered/resolve/main/ShareGPT_V3_unfiltered_cleaned_split.json
 
-vllm bench serve \
+python3 ../../../benchmarks/benchmark_serving.py \
     --model mistralai/Mistral-7B-v0.1 \
     --tokenizer mistralai/Mistral-7B-v0.1 \
     --endpoint /v1/completions \

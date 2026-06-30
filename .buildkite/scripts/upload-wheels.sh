@@ -14,19 +14,8 @@ fi
 # Get the single wheel file
 wheel="${wheel_files[0]}"
 
-# Detect architecture and rename 'linux' to appropriate manylinux version
-arch=$(uname -m)
-if [[ $arch == "x86_64" ]]; then
-    manylinux_version="manylinux1"
-elif [[ $arch == "aarch64" ]]; then
-    manylinux_version="manylinux2014"
-else
-    echo "Warning: Unknown architecture $arch, using manylinux1 as default"
-    manylinux_version="manylinux1"
-fi
-
-# Rename 'linux' to the appropriate manylinux version in the wheel filename
-new_wheel="${wheel/linux/$manylinux_version}"
+# Rename 'linux' to 'manylinux1' in the wheel filename
+new_wheel="${wheel/linux/manylinux1}"
 mv -- "$wheel" "$new_wheel"
 wheel="$new_wheel"
 
@@ -58,26 +47,31 @@ python3 .buildkite/generate_index.py --wheel "$normal_wheel"
 aws s3 cp "$wheel" "s3://vllm-wheels/$BUILDKITE_COMMIT/"
 aws s3 cp "$normal_wheel" "s3://vllm-wheels/$BUILDKITE_COMMIT/"
 
-if [[ $normal_wheel == *"cu129"* ]]; then
-    # only upload index.html for cu129 wheels (default wheels) as it
-    # is available on both x86 and arm64
+if [[ $normal_wheel == *"cu118"* ]]; then
+    # if $normal_wheel matches cu118, do not upload the index.html
+    echo "Skipping index files for cu118 wheels"
+elif [[ $normal_wheel == *"cu121"* ]]; then
+    # if $normal_wheel matches cu121, do not upload the index.html
+    echo "Skipping index files for cu121 wheels"
+else
+    # only upload index.html for cu124 wheels (default wheels)
     aws s3 cp index.html "s3://vllm-wheels/$BUILDKITE_COMMIT/vllm/index.html"
     aws s3 cp "s3://vllm-wheels/nightly/index.html" "s3://vllm-wheels/$BUILDKITE_COMMIT/index.html"
-else
-    echo "Skipping index files for non-cu129 wheels"
 fi
 
 # generate index for nightly
 aws s3 cp "$wheel" "s3://vllm-wheels/nightly/"
 aws s3 cp "$normal_wheel" "s3://vllm-wheels/nightly/"
 
-if [[ $normal_wheel == *"cu129"* ]]; then
-    # only upload index.html for cu129 wheels (default wheels) as it
-    # is available on both x86 and arm64
-    aws s3 cp index.html "s3://vllm-wheels/nightly/vllm/index.html"
+if [[ $normal_wheel == *"cu118"* ]]; then
+    # if $normal_wheel matches cu118, do not upload the index.html
+    echo "Skipping index files for cu118 wheels"
+elif [[ $normal_wheel == *"cu121"* ]]; then
+    # if $normal_wheel matches cu121, do not upload the index.html
+    echo "Skipping index files for cu121 wheels"
 else
-    echo "Skipping index files for non-cu129 wheels"
+    # only upload index.html for cu124 wheels (default wheels)
+    aws s3 cp index.html "s3://vllm-wheels/nightly/vllm/index.html"
 fi
 
 aws s3 cp "$wheel" "s3://vllm-wheels/$version/"
-aws s3 cp index.html "s3://vllm-wheels/$version/vllm/index.html"
